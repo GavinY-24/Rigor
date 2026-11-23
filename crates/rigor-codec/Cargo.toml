@@ -1,0 +1,10 @@
+[package]
+name = "rigor-codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Strict canonical RIGB1/RIGC1/RIGR1 binary codec and content-addressed identifiers"
+
+[dependencies]
+rigor-spec = { path = "../rigor-spec" }
+rigor-kernel = { path = "../rigor-kernel" }

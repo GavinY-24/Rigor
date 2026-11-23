@@ -1,0 +1,13 @@
+[package]
+name = "rigor-front"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rigor surface language parser, strict domain elaborator, ticket trace recorder, and stateful machine protocol"
+
+[dependencies]
+rigor-spec = { path = "../rigor-spec" }
+rigor-kernel = { path = "../rigor-kernel" }
+rigor-codec = { path = "../rigor-codec" }
+rigor-runtime = { path = "../rigor-runtime" }
+rigor-certificates = { path = "../rigor-certificates" }

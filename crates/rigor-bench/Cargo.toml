@@ -1,0 +1,15 @@
+[package]
+name = "rigor-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core-derived mathematical audit view and Track A-F experimental benchmark harness"
+
+[dependencies]
+rigor-spec = { path = "../rigor-spec" }
+rigor-kernel = { path = "../rigor-kernel" }
+rigor-codec = { path = "../rigor-codec" }
+rigor-runtime = { path = "../rigor-runtime" }
+rigor-certificates = { path = "../rigor-certificates" }
+rigor-front = { path = "../rigor-front" }
+rigor-bridges = { path = "../rigor-bridges" }
