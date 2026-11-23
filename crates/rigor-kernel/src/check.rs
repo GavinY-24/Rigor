@@ -858,6 +858,32 @@ impl Kernel {
         Ok(Some(result))
     }
 
+    /// Evaluate a closed Nat literal / zero-succ chain to a number, if it is one.
+    /// Recursor applications on literals are fully evaluated (whnf at the head
+    /// of each subterm), so `Nat.add 2 Nat.zero` and the literal `2` agree.
+    pub fn nat_value(&mut self, ctx: &Context, e: ExprId) -> KResult<Option<BigUint>> {
+        let w = self.whnf(ctx, e)?;
+        match self.arena.get_clone(w) {
+            Expr::LitNat(v) => Ok(Some(v)),
+            Expr::Const(n, _) if self.names.display(n) == "Nat.zero" => Ok(Some(BigUint::zero())),
+            Expr::App(_, _) => {
+                let (head, args) = spine(&self.arena, w);
+                if args.len() == 1 {
+                    if let Expr::Const(n, _) = self.arena.get_clone(head) {
+                        if self.names.display(n) == "Nat.succ" {
+                            return Ok(match self.nat_value(ctx, args[0])? {
+                                Some(v) => Some(v.add(&BigUint::one())),
+                                None => None,
+                            });
+                        }
+                    }
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
     // ---------- definitional equality ----------
 
     pub fn is_def_eq(&mut self, ctx: &Context, a: ExprId, b: ExprId) -> KResult<bool> {
@@ -869,6 +895,10 @@ impl Kernel {
         let bw = self.whnf(ctx, b)?;
         if aw == bw {
             return Ok(true);
+        }
+        // Nat literals are definitionally the corresponding zero/succ chains.
+        if let (Ok(Some(x)), Ok(Some(y))) = (self.nat_value(ctx, aw), self.nat_value(ctx, bw)) {
+            return Ok(x == y);
         }
         // Proof irrelevance: two proofs of the same (defeq) proposition are equal.
         if let (Ok(ta), Ok(tb)) = (self.infer(ctx, aw), self.infer(ctx, bw)) {
@@ -1547,7 +1577,7 @@ impl Kernel {
                                         "_",
                                         NExpr::apps(NExpr::var("r"), &[NExpr::var("a"), NExpr::var("b")]),
                                         NExpr::apps(
-                                            NExpr::const_("Eq"),
+                                            NExpr::const_levels("Eq", vec![Level::Param(1)]),
                                             &[
                                                 NExpr::var("β"),
                                                 NExpr::app(NExpr::var("f"), NExpr::var("a")),
@@ -1633,7 +1663,7 @@ impl Kernel {
                             "_",
                             NExpr::apps(NExpr::var("r"), &[NExpr::var("a"), NExpr::var("b")]),
                             NExpr::apps(
-                                NExpr::const_("Eq"),
+                                NExpr::const_levels("Eq", vec![Level::Param(0)]),
                                 &[
                                     NExpr::apps(
                                         NExpr::const_levels("Quot", vec![u.clone()]),
