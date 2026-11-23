@@ -722,6 +722,10 @@ impl Kernel {
         let mut result = minor;
         let mut applied: Vec<ExprId> = Vec::new(); // params ++ fields so far (for instantiating field types)
         applied.extend_from_slice(&ctor_args[..num_params.min(ctor_args.len())]);
+        // The minor's telescope is: all fields, then one IH per recursive
+        // field (in field order) — that is the generated recursor type's
+        // shape. Iota must apply arguments in exactly that order.
+        let mut ihs: Vec<ExprId> = Vec::new();
         for (fi, field_val) in fields.iter().enumerate() {
             result = self.arena.app(result, *field_val);
             applied.push(*field_val);
@@ -787,9 +791,12 @@ impl Kernel {
                     }
                     // NOTE: binder domains above are in the instantiated context;
                     // they are already correct de Bruijn expressions for this position.
-                    result = self.arena.app(result, ih_body);
+                    ihs.push(ih_body);
                 }
             }
+        }
+        for ih in ihs {
+            result = self.arena.app(result, ih);
         }
         // apply any remaining arguments beyond the major premise
         for &a in &args[needed..] {

@@ -449,6 +449,45 @@ def subst_top(e, repl):
     return go(e, 0)
 
 
+def subst_telescope(e, args):
+    """Instantiate a telescope (args[0] outermost) in one pass.
+
+    Iterating subst_top is wrong: each subst_top decrements free
+    variables inside ambient terms substituted earlier. A free BVar(i)
+    at binder depth d names telescope position (i - d) from the
+    innermost binder, i.e. args[len-1-(i-d)], shifted by d.
+    """
+    if not args:
+        return e
+    n = len(args)
+
+    def go(t, depth):
+        tag = t[0]
+        if tag == "bvar":
+            i = t[1]
+            if i < depth:
+                return t
+            rel = i - depth
+            if rel < n:
+                return shift(args[n - 1 - rel], depth, 0)
+            return ("bvar", i - n)
+        if tag in ("const", "sort", "litnat", "litstr"):
+            return t
+        if tag == "pi":
+            return ("pi", go(t[1], depth), go(t[2], depth + 1))
+        if tag == "lam":
+            return ("lam", go(t[1], depth), go(t[2], depth + 1))
+        if tag == "app":
+            return ("app", go(t[1], depth), go(t[2], depth))
+        if tag == "let":
+            return ("let", go(t[1], depth), go(t[2], depth), go(t[3], depth + 1))
+        if tag == "proj":
+            return ("proj", t[1], t[2], go(t[3], depth))
+        raise KError("bad term in subst_telescope")
+
+    return go(e, 0)
+
+
 def subst_levels(e, subst):
     if not subst:
         return e
@@ -745,6 +784,8 @@ class Kernel:
         ctor_binders, _ = pi_telescope(ctor_decl["ty"])
         result = chosen_minor
         applied = list(ctor_args[:num_params])
+        # Minor telescope: all fields, then the IHs (field order).
+        ihs = []
         for fi, field_val in enumerate(fields):
             result = ("app", result, field_val)
             applied.append(field_val)
@@ -753,9 +794,7 @@ class Kernel:
                 continue
             field_ty = ctor_binders[binder_pos]
             # subst_telescope with applied-so-far excluding current field
-            instantiated = field_ty
-            for a in reversed(applied[:-1]):
-                instantiated = subst_top(instantiated, a)
+            instantiated = subst_telescope(field_ty, applied[:-1])
             fb, tail = pi_telescope(instantiated)
             thead, targs = spine(tail)
             is_rec = thead[0] == "const" and any(thead[1] == bn for bn, _ in block)
@@ -784,6 +823,8 @@ class Kernel:
             ih = ("app", ih, major_expr)
             for bdom in reversed(fb):
                 ih = ("lam", bdom, ih)
+            ihs.append(ih)
+        for ih in ihs:
             result = ("app", result, ih)
         for a in args[needed:]:
             result = ("app", result, a)
@@ -990,9 +1031,7 @@ class Kernel:
             subst_args = list(targs[: ind["num_params"]])
             for k in range(idx):
                 subst_args.append(("proj", struct_name, k, term))
-            for a in reversed(subst_args):
-                field_ty = subst_top(field_ty, a)
-            return field_ty
+            return subst_telescope(field_ty, subst_args)
         if tag == "litnat":
             if "Nat" not in self.env:
                 raise UnsupportedError("Nat literal used before Nat is declared")

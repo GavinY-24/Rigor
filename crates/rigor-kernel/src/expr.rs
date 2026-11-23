@@ -295,13 +295,65 @@ impl ExprArena {
     }
 
     /// Instantiate a telescope of binders: `args[0]` is the outermost variable.
-    pub fn subst_telescope(&mut self, mut e: ExprId, args: &[ExprId]) -> ExprId {
-        // Substitute from innermost outward so earlier substitutions do not
-        // disturb the indices of the remaining binders.
-        for &a in args.iter().rev() {
-            e = self.subst_top(e, a);
+    ///
+    /// This must be a single pass (Lean's `instantiate`): iterating
+    /// `subst_top` from the innermost binder outward is *wrong*, because
+    /// each `subst_top` decrements every free variable above its target —
+    /// including variables inside the ambient terms substituted for
+    /// earlier binders, which refer to the caller's context and must not
+    /// move. In one pass, a free `BVar(i)` at binder depth `d` names
+    /// telescope position `i - d` counted from the innermost binder, i.e.
+    /// `args[args.len() - 1 - (i - d)]`, shifted by `d`; variables beyond
+    /// the telescope drop by the telescope length.
+    pub fn subst_telescope(&mut self, e: ExprId, args: &[ExprId]) -> ExprId {
+        if args.is_empty() {
+            return e;
         }
-        e
+        self.instantiate(e, args, 0)
+    }
+
+    fn instantiate(&mut self, e: ExprId, args: &[ExprId], depth: u32) -> ExprId {
+        match self.get_clone(e) {
+            Expr::BVar(i) => {
+                if i < depth {
+                    e
+                } else {
+                    let rel = (i - depth) as usize;
+                    if rel < args.len() {
+                        let repl = args[args.len() - 1 - rel];
+                        self.shift(repl, depth as i64, 0)
+                    } else {
+                        self.bvar(i - args.len() as u32)
+                    }
+                }
+            }
+            Expr::Const(_, _) | Expr::Sort(_) | Expr::LitNat(_) | Expr::LitStr(_) => e,
+            Expr::Pi(n, info, d, c) => {
+                let d2 = self.instantiate(d, args, depth);
+                let c2 = self.instantiate(c, args, depth + 1);
+                self.pi(n, info, d2, c2)
+            }
+            Expr::Lam(n, info, d, b) => {
+                let d2 = self.instantiate(d, args, depth);
+                let b2 = self.instantiate(b, args, depth + 1);
+                self.lam(n, info, d2, b2)
+            }
+            Expr::App(f, a) => {
+                let f2 = self.instantiate(f, args, depth);
+                let a2 = self.instantiate(a, args, depth);
+                self.app(f2, a2)
+            }
+            Expr::Let(n, t, v, b) => {
+                let t2 = self.instantiate(t, args, depth);
+                let v2 = self.instantiate(v, args, depth);
+                let b2 = self.instantiate(b, args, depth + 1);
+                self.intern(Expr::Let(n, t2, v2, b2))
+            }
+            Expr::Proj(s, i, t) => {
+                let t2 = self.instantiate(t, args, depth);
+                self.intern(Expr::Proj(s, i, t2))
+            }
+        }
     }
 
     /// Substitute universe levels inside an expression.

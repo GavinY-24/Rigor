@@ -178,7 +178,12 @@ fn build_graph(bundle: &Bundle) -> Result<DepGraph, String> {
     Ok(DepGraph { groups, group_of_decl, deps, closure_names, axioms_of })
 }
 
-fn topo_order(graph: &DepGraph) -> Result<Vec<usize>, String> {
+/// Topological order of the acyclic part of the graph, plus the set of
+/// groups stuck in (or downstream of) a dependency cycle. Cycles fail
+/// per-group — with per-root coverage — rather than aborting the whole
+/// bundle verdict, and mutually dependent declarations are rejected no
+/// matter how they are scheduled.
+fn topo_order(graph: &DepGraph) -> (Vec<usize>, std::collections::BTreeSet<usize>) {
     let n = graph.groups.len();
     let mut indeg: Vec<usize> = vec![0; n];
     let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -202,14 +207,9 @@ fn topo_order(graph: &DepGraph) -> Result<Vec<usize>, String> {
             }
         }
     }
-    if order.len() != n {
-        let remaining: Vec<usize> = (0..n).filter(|g| !order.contains(g)).collect();
-        return Err(format!(
-            "dependency cycle outside a permitted declaration block involving {} declaration group(s); mutually dependent theorems are rejected regardless of scheduling order",
-            remaining.len()
-        ));
-    }
-    Ok(order)
+    let cyclic: std::collections::BTreeSet<usize> =
+        (0..n).filter(|g| !order.contains(g)).collect();
+    (order, cyclic)
 }
 
 fn dependency_levels(graph: &DepGraph, order: &[usize]) -> Vec<Vec<usize>> {
@@ -279,6 +279,17 @@ fn admit_declared(
         }
         DECL_AXIOM | DECL_DEF | DECL_THEOREM | DECL_OPAQUE => {
             let name_str = bundle.name_string(d.name);
+            // The bundle also carries Quot.sound as an ordinary axiom
+            // declaration, but the quotient package (admitted as a unit
+            // via add_quot) already registered the canonical axiom.
+            // Admitting it again would be a spurious duplicate; its uses
+            // still count as Quot.sound in every assumption closure.
+            if d.kind == DECL_AXIOM
+                && name_str == "Quot.sound"
+                && kernel.lookup_decl("Quot.sound").is_some()
+            {
+                return Ok(());
+            }
             let nid = kernel.names.intern(rigor_kernel::Name::from_dotted(&name_str));
             let lps: Vec<rigor_kernel::NameId> = d
                 .level_params
@@ -444,10 +455,7 @@ pub fn verify_bundle(
         Ok(g) => g,
         Err(e) => return fail_receipt(VerifyVerdict::Invalid, e, opts.workers),
     };
-    let order = match topo_order(&graph) {
-        Ok(o) => o,
-        Err(e) => return fail_receipt(VerifyVerdict::Invalid, e, opts.workers),
-    };
+    let (order, cyclic) = topo_order(&graph);
 
     let stmt_ids = statement_ids(&effective);
     let root_names: Vec<String> = if let Some(ch) = challenge {
@@ -494,6 +502,26 @@ pub fn verify_bundle(
     let mut group_results: HashMap<usize, GroupResult> = HashMap::new();
     let mut total_steps: u64 = 0;
     let use_parallel = opts.workers > 1 && graph.groups.len() > 1;
+
+    // Groups in (or downstream of) a dependency cycle fail individually;
+    // everything else is still admitted and covered per root.
+    for &g in &cyclic {
+        group_results.insert(
+            g,
+            GroupResult {
+                group: g,
+                ok: false,
+                fail: Some((
+                    FailKind::Invalid,
+                    format!(
+                        "dependency cycle outside a permitted declaration block involving {} declaration group(s); mutually dependent theorems are rejected regardless of scheduling order",
+                        cyclic.len()
+                    ),
+                )),
+                steps: 0,
+            },
+        );
+    }
 
     if !use_parallel {
         let (mut kernel, terms, _contexts) = fresh_kernel(&effective, opts);

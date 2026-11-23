@@ -613,6 +613,21 @@ impl Elab {
                 Ok(self.fix_const_levels(ctx, e))
             }
             STerm::ULevels(inner, names) => match &**inner {
+                STerm::Ident(s) if s == "Type" => {
+                    if names.len() != 1 {
+                        return Err("Type takes exactly one universe argument: Type.{u}".into());
+                    }
+                    match self.level_scope.iter().position(|p| p == &names[0]) {
+                        Some(i) => Ok(NExpr::sort(Level::Succ(Box::new(Level::Param(i as u32))))),
+                        None => Err(format!(
+                            "universe parameter '{}' is not declared on this declaration",
+                            names[0]
+                        )),
+                    }
+                }
+                STerm::Ident(s) if s == "Prop" => {
+                    Err("Prop has no universe parameter (Prop = Sort 0)".into())
+                }
                 STerm::Ident(s) => {
                     let mut levels = Vec::new();
                     for n in names {
