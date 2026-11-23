@@ -13,7 +13,7 @@ pub mod expr;
 pub mod level;
 pub mod ticket;
 
-pub use builder::{lower, lower_closed, pretty, to_named, NExpr};
+pub use builder::{lower, lower_closed, pretty, pretty_named, to_named, NExpr};
 pub use check::{Budget, Context, InductiveSpec, Kernel, KernelError, KResult, LocalDecl};
 pub use env::{CtorInfo, Decl, DeclKind, Env, InductiveInfo, RecursorInfo, Reducibility};
 pub use expr::{pi_telescope, spine, BinderInfo, Expr, ExprArena, ExprId, Name, NameArena, NameId, NamePart};

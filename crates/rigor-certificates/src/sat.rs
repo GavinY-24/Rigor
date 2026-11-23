@@ -152,6 +152,40 @@ fn bool_var(name: &str) -> NExpr {
     NExpr::pi(name, NExpr::const_("Bool"), NExpr::prop())
 }
 
+/// Substitute a variable by a term in a formula evaluation expression.
+/// The only binders in such expressions are the recursor motives (`_`), so
+/// shadowing can only occur for the substituted name itself.
+fn subst_var(e: &NExpr, name: &str, repl: &NExpr) -> NExpr {
+    match e {
+        NExpr::Var(s) => {
+            if s == name {
+                repl.clone()
+            } else {
+                e.clone()
+            }
+        }
+        NExpr::App(f, a) => NExpr::app(subst_var(f, name, repl), subst_var(a, name, repl)),
+        NExpr::Pi(n, i, d, c) => {
+            let d2 = subst_var(d, name, repl);
+            if n == name {
+                NExpr::Pi(n.clone(), *i, Box::new(d2), c.clone())
+            } else {
+                NExpr::Pi(n.clone(), *i, Box::new(d2), Box::new(subst_var(c, name, repl)))
+            }
+        }
+        NExpr::Lam(n, i, d, c) => {
+            let d2 = subst_var(d, name, repl);
+            if n == name {
+                NExpr::Lam(n.clone(), *i, Box::new(d2), c.clone())
+            } else {
+                NExpr::Lam(n.clone(), *i, Box::new(d2), Box::new(subst_var(c, name, repl)))
+            }
+        }
+        NExpr::Proj(s, i, x) => NExpr::Proj(s.clone(), *i, Box::new(subst_var(x, name, repl))),
+        _ => e.clone(),
+    }
+}
+
 /// Build the core proof that a formula is false under all assignments, as a
 /// term of type `forall v0 ... vn, Eq Bool (eval f) Bool.false`, by nested
 /// Bool.rec case analysis. The kernel recomputes `eval` at every leaf, so a
@@ -193,10 +227,13 @@ pub fn unsat_case_proof(f: &Formula, num_vars: usize) -> Result<NExpr, String> {
             crate::stdlib::eq(NExpr::const_("Bool"), eval_expr.clone(), NExpr::const_("Bool.false")),
         );
         // Case order follows constructor order: Bool.true (minor 0), Bool.false (minor 1).
-        // But wait: motive/eval uses var_names[idx] bound by the motive lambda;
-        // the nested build for idx+1 must see the same eval with this var still free.
-        let true_case = build(idx + 1, num_vars, var_names, eval_expr);
-        let false_case = build(idx + 1, num_vars, var_names, eval_expr);
+        // Each branch continues with this variable substituted by the branch
+        // value, so the nested case term's type matches the motive applied
+        // to that value (the kernel checks exactly this).
+        let eval_true = subst_var(eval_expr, &var_names[idx], &NExpr::const_("Bool.true"));
+        let eval_false = subst_var(eval_expr, &var_names[idx], &NExpr::const_("Bool.false"));
+        let true_case = build(idx + 1, num_vars, var_names, &eval_true);
+        let false_case = build(idx + 1, num_vars, var_names, &eval_false);
         NExpr::apps(
             NExpr::const_levels("Bool.rec", vec![rigor_kernel::Level::Zero]),
             &[
