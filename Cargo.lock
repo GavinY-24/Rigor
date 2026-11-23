@@ -19,7 +19,9 @@ dependencies = [
 name = "rigor-bridges"
 version = "1.0.0"
 dependencies = [
+ "rigor-certificates",
  "rigor-codec",
+ "rigor-front",
  "rigor-kernel",
  "rigor-runtime",
  "rigor-spec",
