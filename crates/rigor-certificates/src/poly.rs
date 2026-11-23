@@ -1269,6 +1269,10 @@ fn monomial_product_proof(
     // coeff product is 1 (only when both 1: then fa=1*ma forms were used, so
     // (1*1)*sorted vs sorted: need one_mul handling) or (lit * sorted).
     let coeff_prod = coeff_a.mul(coeff_b);
+    // p_mono_sorted : (ma*mb) = sorted, so this congruence starts at
+    // (ca*cb)*(ma*mb) — which is x5 — and ends at (ca*cb)*sorted. It does
+    // not start at `almost` unless the monomials were already sorted.
+    let unsorted_scaled = mul(mul(ca_e.clone(), cb_e.clone()), mul(ma.clone(), mb.clone()));
     let p_coeff = congr_mul_left(mul(ca_e.clone(), cb_e.clone()), p_mono_sorted, mul(ma, mb), sorted_mono_expr.clone());
     let almost = mul(mul(ca_e.clone(), cb_e.clone()), sorted_mono_expr.clone());
     let p_lit = if coeff_prod.is_one() {
@@ -1288,7 +1292,7 @@ fn monomial_product_proof(
         // because the claimed Eq type is defeq (literal mul computes).
         refl(almost.clone())
     };
-    let p_target = trans(p_coeff, p_lit, almost.clone(), almost.clone(), target.clone());
+    let p_target = trans(p_coeff, p_lit, unsorted_scaled, almost.clone(), target.clone());
     // Wait p_lit proves almost = sorted (when coeff 1) whose target should be
     // `target` (= sorted bare monomial). When coeff not 1, p_lit is refl(almost)
     // and target = (lit coeff_prod)*sorted which is defeq but not syntactically

@@ -556,6 +556,10 @@ def named_to_db(e, scope):
         return ("const", e[1], e[2])
     if tag == "ns":
         return ("sort", e[1])
+    if tag == "nlit":
+        return ("litnat", e[1])
+    if tag == "nstr":
+        return ("litstr", e[1])
     if tag == "napp":
         return ("app", named_to_db(e[1], scope), named_to_db(e[2], scope))
     if tag in ("npi", "nlam"):
@@ -1283,6 +1287,10 @@ class Kernel:
                 return ("nc", t[1], t[2])
             if tag == "sort":
                 return ("ns", t[1])
+            if tag == "litnat":
+                return ("nlit", t[1])
+            if tag == "litstr":
+                return ("nstr", t[1])
             if tag == "app":
                 return ("napp", go(t[1], scope), go(t[2], scope))
             if tag in ("pi", "lam"):

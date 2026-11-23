@@ -55,6 +55,30 @@ fn poly_identity_core_proof() {
 }
 
 #[test]
+fn poly_identity_three_factor_comm() {
+    // Regression: multiplying three monomials reassociates and sorts.
+    // The coefficient-1 wrapper used to claim the scaled product was
+    // already sorted, so the proof's equality endpoints did not match.
+    let mut k = bootstrap_kernel().expect("bootstrap");
+    let lhs = PolyExpr::mul(
+        PolyExpr::mul(PolyExpr::var(0), PolyExpr::var(1)),
+        PolyExpr::var(2),
+    );
+    let rhs = PolyExpr::mul(
+        PolyExpr::var(2),
+        PolyExpr::mul(PolyExpr::var(1), PolyExpr::var(0)),
+    );
+    let vars = vec!["x".to_string(), "y".to_string(), "z".to_string()];
+    let proof = poly_identity_proof(&lhs, &rhs, &vars).expect("build");
+    let ty = stdlib::eq(
+        stdlib::nat(),
+        rigor_certificates::poly::poly_to_nexpr(&lhs, &vars),
+        rigor_certificates::poly::poly_to_nexpr(&rhs, &vars),
+    );
+    check_proof(&mut k, &ty, &proof, &["x", "y", "z"]);
+}
+
+#[test]
 fn poly_identity_simple_comm() {
     let mut k = bootstrap_kernel().expect("bootstrap");
     let lhs = PolyExpr::add(PolyExpr::var(0), PolyExpr::var(1));
