@@ -118,6 +118,39 @@ pub fn subst(e: &NExpr, name: &str, repl: &NExpr) -> NExpr {
     }
 }
 
+/// Instantiate the universe parameters of a named term (e.g. a recursor or
+/// inductive type read from a declaration) with concrete levels.
+pub fn subst_level_params(e: &NExpr, inst: &[Level]) -> NExpr {
+    if inst.is_empty() {
+        return e.clone();
+    }
+    match e {
+        NExpr::Const(n, lv) => NExpr::Const(n.clone(), lv.iter().map(|l| l.subst(inst)).collect()),
+        NExpr::Sort(l) => NExpr::Sort(l.subst(inst)),
+        NExpr::App(f, a) => NExpr::app(subst_level_params(f, inst), subst_level_params(a, inst)),
+        NExpr::Pi(n, info, d, c) => NExpr::Pi(
+            n.clone(),
+            *info,
+            Box::new(subst_level_params(d, inst)),
+            Box::new(subst_level_params(c, inst)),
+        ),
+        NExpr::Lam(n, info, d, c) => NExpr::Lam(
+            n.clone(),
+            *info,
+            Box::new(subst_level_params(d, inst)),
+            Box::new(subst_level_params(c, inst)),
+        ),
+        NExpr::Let(n, t, v, b) => NExpr::Let(
+            n.clone(),
+            Box::new(subst_level_params(t, inst)),
+            Box::new(subst_level_params(v, inst)),
+            Box::new(subst_level_params(b, inst)),
+        ),
+        NExpr::Proj(s, i, t) => NExpr::Proj(s.clone(), *i, Box::new(subst_level_params(t, inst))),
+        _ => e.clone(),
+    }
+}
+
 /// Replace every syntactic occurrence of `pat` by `repl`.
 pub fn replace_all(e: &NExpr, pat: &NExpr, repl: &NExpr) -> NExpr {
     if e == pat {
@@ -479,7 +512,7 @@ impl Elab {
     fn fix_const_levels(&mut self, ctx: &[CtxLocal], e: NExpr) -> NExpr {
         let (head, args) = spine(&e);
         let (name, levels) = match &head {
-            NExpr::Const(n, lv) if !lv.is_empty() && lv.iter().all(|l| matches!(l, Level::Zero)) => (n.clone(), lv.clone()),
+            NExpr::Const(n, lv) if !lv.is_empty() => (n.clone(), lv.clone()),
             _ => return e,
         };
         let nparams = match self.kernel.names.lookup(&name).and_then(|id| self.kernel.env.get(id)) {
@@ -489,9 +522,18 @@ impl Elab {
         if nparams != levels.len() || nparams == 0 {
             return e;
         }
+        // Zero is the "not yet inferred" sentinel from default_levels.
+        // Fill each still-zero parameter from the sort level of the next
+        // type-valued argument, in order. (Requiring *all* levels to be
+        // zero first — the old precondition — meant multi-parameter
+        // constants like Prod.{u,v} only ever got their first universe
+        // inferred, one application node at a time.)
         let mut new_levels = levels.clone();
         let mut param_i = 0usize;
         for arg in &args {
+            while param_i < nparams && !matches!(new_levels[param_i], Level::Zero) {
+                param_i += 1;
+            }
             if param_i >= nparams {
                 break;
             }
@@ -541,6 +583,30 @@ impl Elab {
             STerm::Str(s) => Ok(NExpr::LitStr(s.clone())),
             STerm::Hole => Err("hole '_' is only allowed inside refine".into()),
             STerm::App(f, a) => {
+                // Tuple sugar `(x, y)` is parsed as `Prod.mk x y`, but the
+                // core constructor also takes the component types
+                // explicitly. Insert them from the components' types.
+                {
+                    let mut args: Vec<&STerm> = vec![a.as_ref()];
+                    let mut head = f.as_ref();
+                    while let STerm::App(f2, a2) = head {
+                        args.push(a2.as_ref());
+                        head = f2.as_ref();
+                    }
+                    args.reverse();
+                    if let STerm::Ident(name) = head {
+                        if name == "Prod.mk" && args.len() == 2 {
+                            let x = self.elaborate(ctx, args[0], obs)?;
+                            let y = self.elaborate(ctx, args[1], obs)?;
+                            let tx = self.infer_nexpr(ctx, &x)?;
+                            let ty = self.infer_nexpr(ctx, &y)?;
+                            let lu = self.sort_level_of(ctx, &tx)?;
+                            let lv = self.sort_level_of(ctx, &ty)?;
+                            let mk = NExpr::const_levels("Prod.mk", vec![lu, lv]);
+                            return Ok(apps(mk, &[tx, ty, x, y]));
+                        }
+                    }
+                }
                 let f2 = self.elaborate(ctx, f, obs)?;
                 let a2 = self.elaborate(ctx, a, obs)?;
                 let e = NExpr::app(f2, a2);
@@ -1247,12 +1313,18 @@ impl Elab {
         let param_values: Vec<NExpr> = targs[..num_params].to_vec();
         let index_values: Vec<NExpr> = targs[num_params..].to_vec();
 
-        // Recursor type, named.
+        // Recursor type, named. The declaration's own universe parameters
+        // must be instantiated (inductive levels, then the elimination
+        // universe) or the motive/minor types would mention free level
+        // parameters that do not exist in the goal.
+        let u_rec = self.sort_level_of(&goal.ctx, &goal.target)?;
         let rec_name = format!("{ind_name}.rec");
         let rec_id = self.kernel.names.lookup(&rec_name).ok_or_else(|| format!("induction: recursor {rec_name} not found"))?;
         let rec_decl = self.kernel.env.get(rec_id).cloned().ok_or("induction: missing recursor")?;
         let mut scope0: Vec<String> = goal.ctx.iter().map(|l| l.name.clone()).collect();
-        let rec_ty = to_named(&self.kernel.arena, &self.kernel.names, rec_decl.ty, &mut scope0);
+        let rec_ty_named = to_named(&self.kernel.arena, &self.kernel.names, rec_decl.ty, &mut scope0);
+        let rec_inst: Vec<Level> = ind_levels.iter().cloned().chain(std::iter::once(u_rec.clone())).collect();
+        let rec_ty = subst_level_params(&rec_ty_named, &rec_inst);
         let (rec_binders, _) = pi_chain(&rec_ty);
         let num_ctors = info.constructors.len();
         // layout: params, motive, minors..., indices..., target
@@ -1266,7 +1338,8 @@ impl Elab {
         // Motive: abstract the indices and the target variable in the goal.
         let ind_ty_named = {
             let mut s: Vec<String> = Vec::new();
-            to_named(&self.kernel.arena, &self.kernel.names, ind_decl.ty, &mut s)
+            let raw = to_named(&self.kernel.arena, &self.kernel.names, ind_decl.ty, &mut s);
+            subst_level_params(&raw, &ind_levels)
         };
         let (ind_binders, _) = pi_chain(&ind_ty_named);
         let mut avoid: HashSet<String> = fv(&goal.target);
@@ -1302,7 +1375,6 @@ impl Elab {
         };
         let _ = &mut motive;
 
-        let u_rec = self.sort_level_of(&goal.ctx, &goal.target)?;
         let mut rec_levels = ind_levels.clone();
         rec_levels.push(u_rec);
         let rec_const = NExpr::Const(rec_name.clone(), rec_levels);
