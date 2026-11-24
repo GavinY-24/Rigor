@@ -133,8 +133,11 @@ pub fn lower_closed(arena: &mut ExprArena, names: &mut NameArena, e: &NExpr) -> 
 pub fn to_named(arena: &ExprArena, names: &NameArena, e: ExprId, scope: &mut Vec<String>) -> NExpr {
     match arena.get_clone(e) {
         Expr::BVar(i) => {
-            let idx = scope.len().saturating_sub(1 + i as usize);
-            let name = scope.get(idx).cloned().unwrap_or_else(|| format!("x{}", i));
+            let name = if (i as usize) < scope.len() {
+                scope[scope.len() - 1 - i as usize].clone()
+            } else {
+                format!("#{}", i)
+            };
             NExpr::Var(name)
         }
         Expr::Const(n, levels) => NExpr::Const(names.display(n), levels),

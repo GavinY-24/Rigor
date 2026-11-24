@@ -18,7 +18,17 @@ theorem add_assoc_g (given a b c : Nat) : (a + b) + c = a + (b + c) := by
   solve poly
 theorem square_g (given a b : Nat) : (a + b) * (a + b) = a * a + (a * b + a * b) + b * b := by
   solve poly
+theorem square_collect (given a b : Nat) : (a + b) * (a + b) = a * a + (2 * (a * b) + b * b) := by
+  solve poly
 theorem mul_assoc_comm (given x y z : Nat) : (x * y) * z = z * (y * x) := by
+  solve poly
+theorem four_comm (given x y z w : Nat) : (x * y) * (z * w) = w * (z * (y * x)) := by
+  solve poly
+theorem cube_g (given x : Nat) : (x + 1) * ((x + 1) * (x + 1)) = 1 + (3 * x + (3 * (x * x) + (x * (x * x)))) := by
+  solve poly
+theorem scale_sum (given x : Nat) : 2 * (0 + x) = 0 + (2 * x) := by
+  solve poly
+theorem zero_mul_g (given a b : Nat) : (a + 0) * (b + 0) = a * b := by
   solve poly
 theorem calc_g (given a b : Nat) (assuming h : a = b) : a + 0 = b + 0 := by
   calc
@@ -35,6 +45,10 @@ theorem bound3 (given x y z : Nat) (assuming h1 : 1 <= x) (assuming h2 : 2 <= y)
   solve farkas 1 1 1
 theorem bound_shift (given x y : Nat) (assuming h1 : 1 <= x) (assuming h2 : 1 <= y) : 2 <= y + x := by
   solve farkas 1 1
+theorem bound2 (given x : Nat) (assuming h : x <= 4) : x + x <= 8 := by
+  solve farkas 2
+theorem bound_scale (given x y : Nat) (assuming h : x + y <= 5) : (2 * x) + (2 * y) <= 10 := by
+  solve farkas 2
 "#;
 
 const STRUCTURES: &str = r#"

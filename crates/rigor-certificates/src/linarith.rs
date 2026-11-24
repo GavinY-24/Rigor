@@ -359,45 +359,30 @@ pub fn nat_farkas_proof(
         crate::stdlib::c("Nat.le_add_right"),
         &[goal_le_expr.clone(), slack_le_expr.clone()],
     );
-    // goal.le + slack_le = sum le (polynomial identity)
-    let sum_le_poly = {
-        let mut p = form_to_poly(&goal.le_side, &goal.le_const, vars);
-        for (var, coeff) in &slack_le {
-            let term = if coeff.is_one() {
-                PolyExpr::Var(*var)
-            } else {
-                PolyExpr::Mul(Box::new(PolyExpr::Const(coeff.clone())), Box::new(PolyExpr::Var(*var)))
-            };
-            p = PolyExpr::Add(Box::new(p), Box::new(term));
-        }
-        if !slack_le_const.is_zero() {
-            p = PolyExpr::Add(Box::new(p), Box::new(PolyExpr::Const(slack_le_const.clone())));
-        }
-        p
-    };
-    let _ = &sum_le_poly;
-    // Transport combined_proof along the two polynomial identities using Eq.rec
-    // on Nat.le indices: we rewrite the *statement* via Eq.transport of the
-    // inequality proof. transport for Nat.le: given Eq Nat (sum_le) (goal_le+slack)
-    // and Eq Nat (sum_ge) (goal_ge), produce the goal proof by Eq.rec.
+    // goal.le + slack_le and the scaled sum are the same polynomial, but not
+    // the same expression: the sum is `k * (0 + form)` while the slack form is
+    // `form + 0`. Prove the equality at those exact expressions. `t + 0` is
+    // not definitionally `t` (addition reduces only on literal pairs), so the
+    // transport has to use the proved equation, not a shorter one.
+    let goal_plus_slack = PolyExpr::add(
+        form_to_poly(&goal.le_side, &goal.le_const, vars),
+        form_to_poly(&slack_le, &slack_le_const, vars),
+    );
     let sum_le_expr = poly_to_nexpr(&cur_le, vars);
     let sum_ge_expr = poly_to_nexpr(&cur_ge, vars);
-    let eq_le = crate::poly::poly_identity_proof(
-        &cur_le,
-        &sum_le_poly,
+    let eq_to_sum = crate::poly::poly_identity_proof(&goal_plus_slack, &cur_le, vars)?;
+    let eq_ge = crate::poly::poly_identity_proof(
+        &cur_ge,
+        &form_to_poly(&goal.ge_side, &goal.ge_const, vars),
         vars,
-    )?; // Eq (sum_le) (goal_le + slack_le)
-    let eq_ge = crate::poly::poly_identity_proof(&cur_ge, &form_to_poly(&goal.ge_side, &goal.ge_const, vars), vars)
-        .unwrap_or_else(|_| crate::stdlib::nat_eq_refl(sum_ge_expr.clone())); // Eq (sum_ge) (goal_ge)
-    // Now: step1 : le (goal.le) (goal.le + slack_le). Rewrite its right index
-    // along symm eq_le to (sum_le)? Directions: combined is le(sum_le, sum_ge).
-    // Desired chain: goal.le <= goal.le+slack (=defeq-as-Eq to sum_le via eq_le symm...)
-    // Use Eq.rec transport on the *type* Nat.le (goal.le) X:
-    //   transport (motive fun X => Nat.le goal.le X) eq_le step1?? eq_le : sum_le = goal_le+slack,
-    //   so symm gives goal_le+slack = sum_le; transporting step1 along symm eq_le
-    //   yields le (goal.le) (sum_le). Then le_trans with combined (le sum_le sum_ge),
-    //   then transport right index along eq_ge to goal.ge.
-    let transported1 = transport_le_right(step1, &goal_le_expr, &add_nat_expr(goal_le_expr.clone(), slack_le_expr.clone()), &sum_le_expr, crate::stdlib::nat_symm(eq_le, sum_le_expr.clone(), add_nat_expr(goal_le_expr.clone(), slack_le_expr.clone())));
+    )?;
+    let transported1 = transport_le_right(
+        step1,
+        &goal_le_expr,
+        &add_nat_expr(goal_le_expr.clone(), slack_le_expr.clone()),
+        &sum_le_expr,
+        eq_to_sum,
+    );
     let chained = le_trans_proof(
         transported1,
         combined_proof,

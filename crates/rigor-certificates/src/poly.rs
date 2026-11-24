@@ -134,6 +134,17 @@ fn key(e: &NExpr) -> String {
     crate::stdlib::pretty_str(e)
 }
 
+/// Factor order is the variable's index in the polynomial variable list, the
+/// same order `Monomial` uses. Sorting by the printed name disagrees with
+/// that index order as soon as a later variable is alphabetically earlier
+/// (`w` before `x`), and the resulting proof then ends at the wrong product.
+fn factor_rank(e: &NExpr, vars: &[String]) -> usize {
+    match e {
+        NExpr::Var(s) => vars.iter().position(|v| v == s).unwrap_or(usize::MAX),
+        _ => usize::MAX,
+    }
+}
+
 fn add(a: NExpr, b: NExpr) -> NExpr {
     crate::stdlib::apps(crate::stdlib::c("Nat.add"), &[a, b])
 }
@@ -156,19 +167,19 @@ fn symm(h: NExpr, a: NExpr, b: NExpr) -> NExpr {
     nat_symm(h, a, b)
 }
 fn congr_add_left(fixed: NExpr, h: NExpr, a: NExpr, b: NExpr) -> NExpr {
-    let f = NExpr::lam("__rcx", nat(), add(fixed.clone(), NExpr::var("__rcx")));
+    let f = NExpr::lam("__al", nat(), add(fixed.clone(), NExpr::var("__al")));
     crate::stdlib::nat_congr(f, h, a, b)
 }
 fn congr_add_right(h: NExpr, fixed: NExpr, a: NExpr, b: NExpr) -> NExpr {
-    let f = NExpr::lam("__rcx", nat(), add(NExpr::var("__rcx"), fixed.clone()));
+    let f = NExpr::lam("__ar", nat(), add(NExpr::var("__ar"), fixed.clone()));
     crate::stdlib::nat_congr(f, h, a, b)
 }
 fn congr_mul_left(fixed: NExpr, h: NExpr, a: NExpr, b: NExpr) -> NExpr {
-    let f = NExpr::lam("__rcx", nat(), mul(fixed.clone(), NExpr::var("__rcx")));
+    let f = NExpr::lam("__ml", nat(), mul(fixed.clone(), NExpr::var("__ml")));
     crate::stdlib::nat_congr(f, h, a, b)
 }
 fn congr_mul_right(h: NExpr, fixed: NExpr, a: NExpr, b: NExpr) -> NExpr {
-    let f = NExpr::lam("__rcx", nat(), mul(NExpr::var("__rcx"), fixed.clone()));
+    let f = NExpr::lam("__mr", nat(), mul(NExpr::var("__mr"), fixed.clone()));
     crate::stdlib::nat_congr(f, h, a, b)
 }
 
@@ -451,7 +462,7 @@ fn monomial_mul_proof(a: &Monomial, b: &Monomial, vars: &[String]) -> (Monomial,
         .chain(b.iter())
         .map(|&i| NExpr::var(&vars[i]))
         .collect();
-    let proof = sort_product_proof(&factors);
+    let proof = sort_product_proof(&factors, vars);
     (merged, lhs, {
         let _ = rhs;
         proof
@@ -470,25 +481,30 @@ fn prod_expr(factors: &[NExpr]) -> NExpr {
     e
 }
 
-fn sort_product_proof(factors: &[NExpr]) -> NExpr {
+fn sort_product_proof(factors: &[NExpr], vars: &[String]) -> NExpr {
     if factors.len() <= 1 {
         return refl(prod_expr(factors));
     }
     let head = factors[0].clone();
     let tail = &factors[1..];
-    let tail_proof = sort_product_proof(tail);
-    let mut sorted_tail: Vec<(String, NExpr)> = tail.iter().map(|a| (key(a), a.clone())).collect();
-    sorted_tail.sort_by(|x, y| x.0.cmp(&y.0));
-    let sorted_tail: Vec<NExpr> = sorted_tail.into_iter().map(|(_, a)| a).collect();
+    let tail_proof = sort_product_proof(tail, vars);
+    let mut sorted_tail: Vec<(usize, usize, NExpr)> = tail
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (factor_rank(a, vars), i, a.clone()))
+        .collect();
+    sorted_tail.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.cmp(&y.1)));
+    let sorted_tail: Vec<NExpr> = sorted_tail.into_iter().map(|(_, _, a)| a).collect();
     let e1 = prod_expr(factors);
     let e2 = mul(head.clone(), prod_expr(&sorted_tail));
-    // tail has at least 1 factor, prod_expr(tail) is fine; if tail len 1 congr still works
+    // When the tail is a single factor it is already "sorted", and the
+    // congruence would be a reflexivity whose endpoints are the product.
     let p1 = if tail.len() == 1 {
-        refl(e2.clone())
+        refl(e1.clone())
     } else {
         congr_mul_left(head.clone(), tail_proof, prod_expr(tail), prod_expr(&sorted_tail))
     };
-    let (e3, p2) = insert_factor_proof(head, &sorted_tail);
+    let (e3, p2) = insert_factor_proof(head, &sorted_tail, vars);
     if e2 == e3 {
         p1
     } else {
@@ -496,12 +512,12 @@ fn sort_product_proof(factors: &[NExpr]) -> NExpr {
     }
 }
 
-fn insert_factor_proof(atom: NExpr, sorted: &[NExpr]) -> (NExpr, NExpr) {
+fn insert_factor_proof(atom: NExpr, sorted: &[NExpr], vars: &[String]) -> (NExpr, NExpr) {
     if sorted.is_empty() {
         return (atom.clone(), refl(atom));
     }
     let head = sorted[0].clone();
-    if key(&atom) <= key(&head) {
+    if factor_rank(&atom, vars) <= factor_rank(&head, vars) {
         let target = prod_expr(&std::iter::once(atom.clone()).chain(sorted.iter().cloned()).collect::<Vec<_>>());
         return (target.clone(), refl(target));
     }
@@ -518,7 +534,7 @@ fn insert_factor_proof(atom: NExpr, sorted: &[NExpr]) -> (NExpr, NExpr) {
     let p1 = symm(lemma("Nat.mul_assoc", &[atom.clone(), head.clone(), rest_expr.clone()]), m1.clone(), start.clone());
     let p2 = congr_mul_right(lemma("Nat.mul_comm", &[atom.clone(), head.clone()]), rest_expr.clone(), mul(atom.clone(), head.clone()), mul(head.clone(), atom.clone()));
     let p3 = lemma("Nat.mul_assoc", &[head.clone(), atom.clone(), rest_expr.clone()]);
-    let (final_expr, p4) = insert_factor_proof(atom.clone(), &sorted[1..]);
+    let (final_expr, p4) = insert_factor_proof(atom.clone(), &sorted[1..], vars);
     let final_full = mul(head.clone(), final_expr.clone());
     let p4w = congr_mul_left(head.clone(), p4, mul(atom.clone(), rest_expr), final_expr);
     let proof = chain2(&[start, m1, m2, end_first, final_full.clone()], vec![p1, p2, p3, p4w]);
@@ -769,88 +785,56 @@ fn combine_adjacent_proof(
     combined: &[(Monomial, BigUint)],
     vars: &[String],
 ) -> NExpr {
-    // Walk sorted list; when two adjacent atoms share a monomial, rewrite
-    // (c1*m) + ((c2*m) + rest) = ((c1+c2)*m) + rest using add_mul (symm) plus
-    // associativity. Implemented recursively.
-    fn go(
-        sorted: &[(Monomial, BigUint)],
-        vars: &[String],
-    ) -> NExpr {
+    // Walk the sorted list. Equal adjacent monomials are merged, then the
+    // walk continues so a run of three or more (x^2 + x^2 + x^2) becomes
+    // one atom. The returned proof equates the sorted sum to the fully
+    // merged sum; stopping after one merge and treating the recursive
+    // proof as reflexivity was unsound for cubes and higher.
+    fn go(sorted: &[(Monomial, BigUint)], vars: &[String]) -> (NExpr, NExpr) {
         if sorted.len() <= 1 {
             let exprs: Vec<NExpr> = sorted.iter().map(|(m, c)| atom_expr(c, m, vars)).collect();
-            return refl(sum_expr(&exprs, &BigUint::zero()));
+            let e = sum_expr(&exprs, &BigUint::zero());
+            return (e.clone(), refl(e));
         }
         let (m1, c1) = &sorted[0];
         let (m2, c2) = &sorted[1];
-        if m1 == m2 && sorted.len() >= 2 {
-            // (c1*m) + ((c2*m) + rest) -> ((c1+c2)*m) + rest
+        if m1 == m2 {
             let a1 = atom_expr(c1, m1, vars);
             let a2 = atom_expr(c2, m2, vars);
-            let rest: Vec<(Monomial, BigUint)> = sorted[2..].to_vec();
+            let rest = &sorted[2..];
             let rest_exprs: Vec<NExpr> = rest.iter().map(|(m, c)| atom_expr(c, m, vars)).collect();
             let rest_sum = sum_expr(&rest_exprs, &BigUint::zero());
             let start = add(a1.clone(), add(a2.clone(), rest_sum.clone()));
-            // step1: a1 + (a2 + rest) = (a1 + a2) + rest (symm add_assoc)
             let mid1 = add(add(a1.clone(), a2.clone()), rest_sum.clone());
             let p1 = symm(
                 lemma("Nat.add_assoc", &[a1.clone(), a2.clone(), rest_sum.clone()]),
                 mid1.clone(),
                 start.clone(),
             );
-            // step2: (c1*m + c2*m) = (c1+c2)*m (symm add_mul). For coeff 1 atoms,
-            // atom_expr is m itself (not 1*m); handle by congr cases:
             let combined_coeff = c1.add(c2);
             let combined_atom = atom_expr(&combined_coeff, m1, vars);
             let p2_inner = coefficient_combine_proof(c1, c2, m1, vars);
             let mid2 = add(combined_atom.clone(), rest_sum.clone());
-            let p2 = congr_add_right(p2_inner, rest_sum.clone(), add(a1, a2), combined_atom);
-            // step3: recurse on combined head + rest
-            let mut next_sorted: Vec<(Monomial, BigUint)> = vec![(m1.clone(), combined_coeff)];
-            next_sorted.extend(rest.iter().cloned());
-            let p3 = go(&next_sorted, vars);
-            let target = sum_expr(
-                &next_sorted.iter().map(|(m, c)| atom_expr(c, m, vars)).collect::<Vec<_>>(),
-                &BigUint::zero(),
-            );
-            return chain2(&[start, mid1, mid2, target], vec![p1, p2, p3]);
+            let p2 = congr_add_right(p2_inner, rest_sum.clone(), add(a1.clone(), a2.clone()), combined_atom);
+            let mut next: Vec<(Monomial, BigUint)> = vec![(m1.clone(), combined_coeff)];
+            next.extend(rest.iter().cloned());
+            let (final_expr, p3) = go(&next, vars);
+            let proof = chain2(&[start, mid1, mid2, final_expr.clone()], vec![p1, p2, p3]);
+            return (final_expr, proof);
         }
-        // distinct monomials: recurse on tail under the head
         let head = atom_expr(c1, m1, vars);
-        let tail_proof = go(&sorted[1..], vars);
-        let tail_exprs: Vec<NExpr> = sorted[1..].iter().map(|(m, c)| atom_expr(c, m, vars)).collect();
-        let target_tail = {
-            // combined tail expression = go's target, which is sum of combined tail
-            // recompute combined tail:
-            let mut combined_tail: Vec<(Monomial, BigUint)> = Vec::new();
-            for (m, c) in &sorted[1..] {
-                if let Some(last) = combined_tail.last_mut() {
-                    if last.0 == *m {
-                        last.1 = last.1.add(c);
-                        continue;
-                    }
-                }
-                combined_tail.push((m.clone(), c.clone()));
-            }
-            combined_tail.retain(|(_, c)| !c.is_zero());
-            sum_expr(
-                &combined_tail.iter().map(|(m, c)| atom_expr(c, m, vars)).collect::<Vec<_>>(),
-                &BigUint::zero(),
-            )
-        };
-        congr_add_left(head, tail_proof, sum_expr(&tail_exprs, &BigUint::zero()), target_tail)
+        let (tail_target, tail_proof) = go(&sorted[1..], vars);
+        let tail_sum = sum_expr(
+            &sorted[1..].iter().map(|(m, c)| atom_expr(c, m, vars)).collect::<Vec<_>>(),
+            &BigUint::zero(),
+        );
+        let target = add(head.clone(), tail_target.clone());
+        let proof = congr_add_left(head, tail_proof, tail_sum, tail_target);
+        (target, proof)
     }
-    let start_exprs: Vec<NExpr> = sorted.iter().map(|(m, c)| atom_expr(c, m, vars)).collect();
-    let target = normal_sum_expr(&{
-        let mut nf = BTreeMap::new();
-        for (m, c) in combined {
-            nf.insert(m.clone(), c.clone());
-        }
-        nf
-    }, vars);
-    let p = go(sorted, vars);
-    let _ = start_exprs;
-    let _ = target;
-    p
+    let (_final_expr, proof) = go(sorted, vars);
+    let _ = combined;
+    proof
 }
 
 /// proof: c1*m + c2*m = (c1+c2)*m (atom_expr forms, coefficient 1 = bare monomial).
@@ -1241,7 +1225,7 @@ fn monomial_product_proof(
         .chain(mono_b.iter())
         .map(|&i| NExpr::var(&vars[i]))
         .collect();
-    let p_sort = sort_product_proof(&var_factors);
+    let p_sort = sort_product_proof(&var_factors, vars);
     let sorted_mono_expr = monomial_expr(&merged, vars);
     // ma*mb proof: product of var_factors in given order is *syntactically*
     // mul(ma, mb) only when both nonempty and association matches prod_expr:
@@ -1257,8 +1241,6 @@ fn monomial_product_proof(
     // v1*(rest*mb)... differs by assoc at each level. The insert-sort proof
     // machinery works on prod_expr forms; we therefore first convert ma*mb to
     // prod(concat) by repeated mul_assoc: reassoc_proof.
-    let p_reassoc = reassoc_product_proof(&var_factors, &mono_a.iter().chain(mono_b.iter()).map(|&i| NExpr::var(&vars[i])).collect::<Vec<_>>(), vars);
-    let _ = p_reassoc;
     // Simpler: define the monomial product target proof directly via
     // sort_product_proof after reassociation:
     let concat_prod = prod_expr(&var_factors);
@@ -1313,65 +1295,50 @@ fn monomial_product_proof(
     (merged, target, proof)
 }
 
-fn reassoc_product_proof(_a: &[NExpr], _b: &[NExpr], _vars: &[String]) -> NExpr {
-    refl(lit_nat_expr(&BigUint::one()))
-}
-
-/// proof: mul(ma, mb) = prod_expr(concat factors) by repeated mul_assoc.
+/// proof: `ma * mb = prod_expr(factors)` by repeated `mul_assoc`.
+/// `ma` and `mb` are themselves right-nested products, so `(f * rest) * mb`
+/// becomes `f * (rest * mb)` and the same step is applied to `rest`.
 fn product_assoc_bridge(ma: &NExpr, mb: &NExpr, factors: &[NExpr]) -> NExpr {
-    // factors = vars of ma followed by vars of mb. prod_expr is right-nested.
-    // ma is prod of its factors (right-nested), so ma * mb: peel ma's head:
-    // (f * rest) * mb = f * (rest * mb) [mul_assoc], recurse.
-    fn peel(ma: &NExpr, mb: &NExpr) -> Option<NExpr> {
-        // returns Some(proof) if ma is an App(mul, f, rest)
-        if let NExpr::App(f, rest) = ma {
+    fn as_mul(e: &NExpr) -> Option<(NExpr, NExpr)> {
+        if let NExpr::App(f, rest) = e {
             if let NExpr::App(f2, head) = &**f {
                 if matches!(&**f2, NExpr::Const(n, _) if n == "Nat.mul") {
-                    let head = (**head).clone();
-                    let rest = (**rest).clone();
-                    let start = mul2(ma.clone(), mb.clone());
-                    let mid = mul2(head.clone(), mul2(rest.clone(), mb.clone()));
-                    let p1 = lemma("Nat.mul_assoc", &[head.clone(), rest.clone(), mb.clone()]);
-                    if is_var_like(&rest) {
-                        // rest * mb is already prod shape f' * mb where mb is prod of its factors:
-                        // (rest * mb) where rest is a single var: prod = var * mb. Syntactic match.
-                        return Some(p1);
-                    }
-                    let inner = peel(&rest, mb)?;
-                    let p2 = congr_mul_left(head.clone(), inner, mul2(rest.clone(), mb.clone()), prod_from(&rest, mb));
-                    return Some(trans(p1, p2, start, mid, prod_from(&ma_from(ma), mb)));
+                    return Some(((**head).clone(), (**rest).clone()));
                 }
             }
         }
         None
     }
-    fn mul2(a: NExpr, b: NExpr) -> NExpr {
-        mul(a, b)
-    }
-    fn is_var_like(e: &NExpr) -> bool {
-        matches!(e, NExpr::Var(_))
-    }
-    fn prod_from(_ma: &NExpr, mb: &NExpr) -> NExpr {
-        mb.clone()
-    }
-    fn ma_from(ma: &NExpr) -> NExpr {
-        ma.clone()
+    /// `(target, proof)` with `proof : Eq (ma * mb) target` and `target` the
+    /// right-nested concatenation of `ma`'s factors followed by `mb`.
+    fn reassoc(ma: &NExpr, mb: &NExpr) -> Option<(NExpr, NExpr)> {
+        let (head, rest) = as_mul(ma)?;
+        let start = mul(ma.clone(), mb.clone());
+        let mid = mul(head.clone(), mul(rest.clone(), mb.clone()));
+        let p_assoc = lemma("Nat.mul_assoc", &[head.clone(), rest.clone(), mb.clone()]);
+        if as_mul(&rest).is_none() {
+            return Some((mid, p_assoc));
+        }
+        let (rest_target, inner) = reassoc(&rest, mb)?;
+        let p_inner = congr_mul_left(
+            head.clone(),
+            inner,
+            mul(rest.clone(), mb.clone()),
+            rest_target.clone(),
+        );
+        let target = mul(head, rest_target);
+        let proof = trans(p_assoc, p_inner, start, mid, target.clone());
+        Some((target, proof))
     }
     let start = mul(ma.clone(), mb.clone());
     let target = prod_expr(factors);
     if start == target {
         return refl(start);
     }
-    // ma has at least 2 factors when this matters; if ma is a single var,
-    // ma * mb IS prod(concat) syntactically.
-    if is_single_factor(ma) {
-        return refl(start);
+    match reassoc(ma, mb) {
+        Some((got, proof)) if got == target => proof,
+        _ => refl(start),
     }
-    peel(ma, mb).unwrap_or_else(|| refl(start))
-}
-
-fn is_single_factor(e: &NExpr) -> bool {
-    matches!(e, NExpr::Var(_))
 }
 
 // ---------------- mul lemmas registration (called from stdlib) ----------------

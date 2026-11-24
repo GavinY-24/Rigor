@@ -79,6 +79,95 @@ fn poly_identity_three_factor_comm() {
 }
 
 #[test]
+fn poly_identity_cube_and_scale() {
+    // Like-term collection in a cube, and scaling a sum by a coefficient
+    // above 1. Both are routine for a ring tactic; the merge walk used to
+    // stop after one adjacent pair and treat the rest as reflexivity.
+    let mut k = bootstrap_kernel().expect("bootstrap");
+    let x = PolyExpr::var(0);
+    let xp1 = PolyExpr::add(x.clone(), PolyExpr::konst(1));
+    let cube = PolyExpr::mul(PolyExpr::mul(xp1.clone(), xp1.clone()), xp1);
+    let expanded = PolyExpr::add(
+        PolyExpr::konst(1),
+        PolyExpr::add(
+            PolyExpr::mul(PolyExpr::konst(3), x.clone()),
+            PolyExpr::add(
+                PolyExpr::mul(PolyExpr::konst(3), PolyExpr::mul(x.clone(), x.clone())),
+                PolyExpr::mul(x.clone(), PolyExpr::mul(x.clone(), x.clone())),
+            ),
+        ),
+    );
+    let vars = vec!["x".to_string()];
+    let proof = poly_identity_proof(&cube, &expanded, &vars).expect("cube");
+    let ty = stdlib::eq(
+        stdlib::nat(),
+        rigor_certificates::poly::poly_to_nexpr(&cube, &vars),
+        rigor_certificates::poly::poly_to_nexpr(&expanded, &vars),
+    );
+    check_proof(&mut k, &ty, &proof, &["x"]);
+
+    let scaled = PolyExpr::mul(PolyExpr::konst(2), PolyExpr::add(PolyExpr::konst(0), x.clone()));
+    let distributed = PolyExpr::add(PolyExpr::konst(0), PolyExpr::mul(PolyExpr::konst(2), x));
+    let proof = poly_identity_proof(&scaled, &distributed, &vars).expect("scale");
+    let ty = stdlib::eq(
+        stdlib::nat(),
+        rigor_certificates::poly::poly_to_nexpr(&scaled, &vars),
+        rigor_certificates::poly::poly_to_nexpr(&distributed, &vars),
+    );
+    check_proof(&mut k, &ty, &proof, &["x"]);
+
+    // (a+b)^2 with the cross term collected, the step a ring tactic takes
+    // after distributing.
+    let a = PolyExpr::var(0);
+    let b = PolyExpr::var(1);
+    let sq = PolyExpr::mul(
+        PolyExpr::add(a.clone(), b.clone()),
+        PolyExpr::add(a.clone(), b.clone()),
+    );
+    let collected = PolyExpr::add(
+        PolyExpr::mul(a.clone(), a.clone()),
+        PolyExpr::add(
+            PolyExpr::mul(PolyExpr::konst(2), PolyExpr::mul(a.clone(), b.clone())),
+            PolyExpr::mul(b.clone(), b),
+        ),
+    );
+    let vars2 = vec!["a".into(), "b".into()];
+    let proof = poly_identity_proof(&sq, &collected, &vars2).expect("square collect");
+    let ty = stdlib::eq(
+        stdlib::nat(),
+        rigor_certificates::poly::poly_to_nexpr(&sq, &vars2),
+        rigor_certificates::poly::poly_to_nexpr(&collected, &vars2),
+    );
+    check_proof(&mut k, &ty, &proof, &["a", "b"]);
+}
+
+#[test]
+fn poly_identity_four_factor_comm() {
+    // Variable `w` sorts before `x` by name and after it by index. The
+    // factor sort has to follow the index order the normal form uses.
+    let mut k = bootstrap_kernel().expect("bootstrap");
+    let lhs = PolyExpr::mul(
+        PolyExpr::mul(PolyExpr::var(0), PolyExpr::var(1)),
+        PolyExpr::mul(PolyExpr::var(2), PolyExpr::var(3)),
+    );
+    let rhs = PolyExpr::mul(
+        PolyExpr::var(3),
+        PolyExpr::mul(
+            PolyExpr::var(2),
+            PolyExpr::mul(PolyExpr::var(1), PolyExpr::var(0)),
+        ),
+    );
+    let vars = vec!["x".into(), "y".into(), "z".into(), "w".into()];
+    let proof = poly_identity_proof(&lhs, &rhs, &vars).expect("build");
+    let ty = stdlib::eq(
+        stdlib::nat(),
+        rigor_certificates::poly::poly_to_nexpr(&lhs, &vars),
+        rigor_certificates::poly::poly_to_nexpr(&rhs, &vars),
+    );
+    check_proof(&mut k, &ty, &proof, &["x", "y", "z", "w"]);
+}
+
+#[test]
 fn poly_identity_simple_comm() {
     let mut k = bootstrap_kernel().expect("bootstrap");
     let lhs = PolyExpr::add(PolyExpr::var(0), PolyExpr::var(1));
@@ -194,6 +283,50 @@ fn farkas_nat_core_proof() {
     let proof_id2 = lower(&mut k.arena, &mut k.names, &mut sc3.clone(), &proof).unwrap();
     let _ = &mut sc3;
     k.check(&ctx, proof_id2, ty_id).expect("farkas proof checks");
+}
+
+#[test]
+fn farkas_scale_by_two() {
+    let mut k = bootstrap_kernel().expect("bootstrap");
+    let h = NatIneq {
+        le_side: vec![(0, BigUint::one())],
+        le_const: BigUint::zero(),
+        ge_side: vec![],
+        ge_const: BigUint::from_u64(4),
+        proof_name: "h".into(),
+    };
+    let goal = NatIneq {
+        le_side: vec![(0, BigUint::from_u64(2))],
+        le_const: BigUint::zero(),
+        ge_side: vec![],
+        ge_const: BigUint::from_u64(8),
+        proof_name: String::new(),
+    };
+    let vars = vec!["x".into()];
+    let proof = nat_farkas_proof(&[h], &goal, &[BigUint::from_u64(2)], &vars).expect("build");
+    let le = stdlib::apps(
+        stdlib::c("Nat.add"),
+        &[NExpr::LitNat(BigUint::zero()), stdlib::apps(stdlib::c("Nat.mul"), &[NExpr::LitNat(BigUint::from_u64(2)), NExpr::var("x")])],
+    );
+    let ty = stdlib::apps(stdlib::c("Nat.le"), &[le, NExpr::LitNat(BigUint::from_u64(8))]);
+    let h_ty = stdlib::apps(stdlib::c("Nat.le"), &[NExpr::var("x"), NExpr::LitNat(BigUint::from_u64(4))]);
+    let mut sc_h = vec!["x".into()];
+    let h_id = lower(&mut k.arena, &mut k.names, &mut sc_h, &h_ty).unwrap();
+    let mut sc = vec!["x".into(), "h".into()];
+    let ty_id = lower(&mut k.arena, &mut k.names, &mut sc.clone(), &ty).unwrap();
+    let proof_id = lower(&mut k.arena, &mut k.names, &mut sc, &proof).unwrap();
+    let nat_name = k.name("Nat");
+    let x_name = k.name("x");
+    let h_name = k.name("h");
+    let nat_ty = k.arena.const_(nat_name, vec![]);
+    let ctx = vec![
+        LocalDecl { name: x_name, ty: nat_ty, value: None },
+        LocalDecl { name: h_name, ty: h_id, value: None },
+    ];
+    k.check(&ctx, proof_id, ty_id).unwrap_or_else(|e| {
+        let m = e.to_string();
+        panic!("{}", &m[..m.len().min(600)]);
+    });
 }
 
 #[test]
