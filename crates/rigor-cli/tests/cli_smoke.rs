@@ -134,6 +134,32 @@ fn check_verifies_every_authored_challenge() {
 }
 
 #[test]
+fn check_ignores_module_headers_inside_comments() {
+    let dir = workdir("commented-modules");
+    let a = dir.join("a.rigor");
+    let b = dir.join("b.rigor");
+    fs::write(
+        &a,
+        "/*\nmodule B\n*/\nmodule A\ntheorem alpha_root : 1 = 1 := by\n  trivial\n",
+    )
+    .unwrap();
+    fs::write(&b, "module B\ntheorem beta_root : 2 = 2 := by\n  trivial\n").unwrap();
+    let out = rigor()
+        .args(["check", a.to_str().unwrap(), b.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "commented module header must not collide with the other input: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("alpha_root") && stdout.contains("beta_root"), "missing roots: {stdout}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_includes_multiple_unnamed_input_files() {
     let dir = workdir("unnamed-inputs");
     let a = dir.join("a.rigor");

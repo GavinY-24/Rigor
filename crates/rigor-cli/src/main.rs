@@ -95,8 +95,60 @@ fn policy_of(args: &Args) -> Result<Policy, String> {
 /// concatenate into one compilation unit (declaration names are global).
 /// Files are visited in CLI order; the sort is stable.
 fn order_sources(sources: &[(String, String)]) -> Result<String, String> {
+    fn uncommented(src: &str) -> String {
+        let chars: Vec<char> = src.chars().collect();
+        let mut out = String::new();
+        let mut i = 0usize;
+        while i < chars.len() {
+            if chars[i] == '"' {
+                out.push(chars[i]);
+                i += 1;
+                while i < chars.len() {
+                    let c = chars[i];
+                    out.push(c);
+                    i += 1;
+                    if c == '\\' && i < chars.len() {
+                        out.push(chars[i]);
+                        i += 1;
+                    } else if c == '"' {
+                        break;
+                    }
+                }
+                continue;
+            }
+            if chars[i] == '-' && chars.get(i + 1) == Some(&'-') {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                let mut depth = 1usize;
+                i += 2;
+                while i < chars.len() && depth > 0 {
+                    if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        if chars[i] == '\n' {
+                            out.push('\n');
+                        }
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            out.push(chars[i]);
+            i += 1;
+        }
+        out
+    }
     fn module_of(src: &str) -> String {
-        src.lines()
+        uncommented(src)
+            .lines()
             .map(|l| l.trim())
             .find_map(|l| l.strip_prefix("module "))
             .map(|m| m.trim().to_string())
@@ -104,7 +156,7 @@ fn order_sources(sources: &[(String, String)]) -> Result<String, String> {
     }
     fn imports_of(src: &str) -> Vec<String> {
         let mut out = Vec::new();
-        for line in src.lines() {
+        for line in uncommented(src).lines() {
             if let Some(rest) = line.trim().strip_prefix("import ") {
                 for dep in rest.split(',') {
                     let dep = dep.trim();
