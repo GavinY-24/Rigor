@@ -8,11 +8,11 @@
 //! invalidates its bundle.
 
 use rigor_certificates::bootstrap_kernel;
-use rigor_codec::{decode_bundle, encode_bundle, encode_kernel, Bundle, PortableDecl, TermNode};
+use rigor_codec::{decode_bundle, encode_bundle, encode_kernel, Bundle, ChallengeRoot, PortableDecl, TermNode};
 use rigor_front::{compile, compile_with};
 use rigor_kernel::{lower_closed, DeclKind, InductiveSpec, Level, NExpr, Reducibility};
 use rigor_runtime::{verify_bundle, Receipt, VerifyCache, VerifyOptions};
-use rigor_spec::{DecoderLimits, Policy, VerifyVerdict};
+use rigor_spec::{DecoderLimits, Policy, StatementId, VerifyVerdict};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -339,6 +339,24 @@ fn fixture06_name_traps_and_cache_isolation() {
         "cache must be keyed by full statement identity, not by name"
     );
     assert_ne!(ra.verification_key, rb.verification_key);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fixture06b_challenge_change_invalidates_cache() {
+    let m = compile_ok("module CacheChallenge\ntheorem a : 1 = 1 := by\n  trivial\nchallenge main := a\n");
+    let good = m.challenges[0].clone();
+    let mut missing = good.clone();
+    missing.roots.push(ChallengeRoot { name: "missing".into(), statement_id: StatementId([0u8; 32]) });
+
+    let dir = temp_dir("challenge-key");
+    let mut cache = VerifyCache::with_disk(dir.clone());
+    let r1 = verify_bundle(&m.bundle_bytes, Some(&good), &Policy::constructive(), &VerifyOptions::default(), Some(&mut cache));
+    assert_eq!(r1.verdict, VerifyVerdict::VerifiedMatched, "roots: {:?}", r1.roots);
+    let r2 = verify_bundle(&m.bundle_bytes, Some(&missing), &Policy::constructive(), &VerifyOptions::default(), Some(&mut cache));
+    assert_eq!(r2.verdict, VerifyVerdict::Invalid, "missing roots must not inherit a cached success: {:?}", r2.roots);
+    assert!(r2.roots.iter().any(|r| r.name == "missing"));
+    assert_ne!(r1.verification_key, r2.verification_key);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
