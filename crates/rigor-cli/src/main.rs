@@ -133,9 +133,8 @@ fn order_sources(sources: &[(String, String)]) -> Result<String, String> {
                         depth -= 1;
                         i += 2;
                     } else {
-                        if chars[i] == '\n' {
-                            out.push('\n');
-                        }
+                        // Newlines inside a block comment are invisible to the
+                        // language lexer, so they must not split header lines here.
                         i += 1;
                     }
                 }

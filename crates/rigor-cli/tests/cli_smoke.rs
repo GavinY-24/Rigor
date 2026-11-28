@@ -160,6 +160,32 @@ fn check_ignores_module_headers_inside_comments() {
 }
 
 #[test]
+fn check_reads_headers_split_by_multiline_comments() {
+    let dir = workdir("split-comment-headers");
+    let a = dir.join("a.rigor");
+    let b = dir.join("b.rigor");
+    fs::write(
+        &a,
+        "module /* multi\nline */ A\nimport /* multi\nline */ B\ntheorem alpha_root : beta_val = 1 := by\n  trivial\n",
+    )
+    .unwrap();
+    fs::write(&b, "module B\ndef beta_val : Nat := 1\n").unwrap();
+    let out = rigor()
+        .args(["check", a.to_str().unwrap(), b.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "dependency hidden by a multiline comment was not ordered first: stdout {} stderr {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("alpha_root"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_includes_multiple_unnamed_input_files() {
     let dir = workdir("unnamed-inputs");
     let a = dir.join("a.rigor");
