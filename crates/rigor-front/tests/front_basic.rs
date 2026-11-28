@@ -282,6 +282,19 @@ fn protocol_reseal_rejects_same_name_different_statement() {
 }
 
 #[test]
+fn protocol_open_supports_universe_levels() {
+    let mut machine = Machine::new();
+    let r = machine.execute(Command::Open {
+        source: "theorem id_key.{u} (given alpha : Type.{u}) (given a : alpha) : a = a := by\n  trivial\n".to_string(),
+    });
+    assert!(r.ok, "open failed: {}", r.message);
+    let r = machine.execute(Command::Apply { tactic: "trivial".into() });
+    assert!(r.ok, "trivial failed: {}", r.message);
+    let r = machine.execute(Command::Seal);
+    assert!(r.ok, "seal failed: {}", r.message);
+}
+
+#[test]
 fn protocol_open_supports_inductive_prelude() {
     let mut machine = Machine::new();
     let r = machine.execute(Command::Open {

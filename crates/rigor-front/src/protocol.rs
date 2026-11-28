@@ -302,7 +302,8 @@ impl Machine {
         // becomes the interactive proof. Definitions before it are admitted.
         for decl in &decls {
             match decl {
-                SDecl::Theorem { name, telescope, target, proof, .. } => {
+                SDecl::Theorem { name, levels, telescope, target, proof } => {
+                    self.session.elab.level_scope = levels.clone();
                     if let TheoremProof::Term(_) = proof {
                         // closed-form proof: admit immediately via compile path pieces
                     }
@@ -324,11 +325,7 @@ impl Machine {
                             return self.err(e);
                         }
                     }
-                    let levels = match decl {
-                        SDecl::Theorem { levels, .. } => levels.clone(),
-                        _ => Vec::new(),
-                    };
-                    self.session.current = Some((name.clone(), ctx, target_e, levels));
+                    self.session.current = Some((name.clone(), ctx, target_e, levels.clone()));
                     let resp = self.ok(&state, format!("opened theorem '{name}'"));
                     return resp;
                 }
