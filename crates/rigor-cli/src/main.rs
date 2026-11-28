@@ -116,39 +116,70 @@ fn order_sources(sources: &[(String, String)]) -> Result<String, String> {
         }
         out
     }
-    let mut by_module: std::collections::HashMap<String, &str> = Default::default();
-    for (_, src) in sources {
-        by_module.insert(module_of(src), src.as_str());
+
+    #[derive(Clone, PartialEq, Eq, Hash)]
+    enum SourceKey {
+        Named(String),
+        Unnamed(usize),
     }
+    fn key_name(key: &SourceKey) -> String {
+        match key {
+            SourceKey::Named(name) => name.clone(),
+            SourceKey::Unnamed(index) => format!("<unnamed input {index}>"),
+        }
+    }
+
+    let mut keys = Vec::new();
+    let mut by_key: std::collections::HashMap<SourceKey, &str> = Default::default();
+    let mut named: std::collections::HashMap<String, SourceKey> = Default::default();
+    for (index, (_, src)) in sources.iter().enumerate() {
+        let module = module_of(src);
+        let key = if module.is_empty() {
+            SourceKey::Unnamed(index)
+        } else {
+            SourceKey::Named(module.clone())
+        };
+        if let SourceKey::Named(name) = &key {
+            if named.insert(name.clone(), key.clone()).is_some() {
+                return Err(format!("duplicate module '{name}' among input files"));
+            }
+        }
+        by_key.insert(key.clone(), src.as_str());
+        keys.push(key);
+    }
+
     let mut ordered: Vec<&str> = Vec::new();
-    let mut done: std::collections::HashSet<String> = Default::default();
+    let mut done: std::collections::HashSet<SourceKey> = Default::default();
     fn visit<'a>(
-        name: &str,
-        by_module: &std::collections::HashMap<String, &'a str>,
-        done: &mut std::collections::HashSet<String>,
-        stack: &mut Vec<String>,
+        key: &SourceKey,
+        by_key: &std::collections::HashMap<SourceKey, &'a str>,
+        named: &std::collections::HashMap<String, SourceKey>,
+        done: &mut std::collections::HashSet<SourceKey>,
+        stack: &mut Vec<SourceKey>,
         ordered: &mut Vec<&'a str>,
     ) -> Result<(), String> {
-        if done.contains(name) {
+        if done.contains(key) {
             return Ok(());
         }
-        if stack.iter().any(|s| s == name) {
-            return Err(format!("import cycle involving module '{name}'"));
+        if stack.iter().any(|k| k == key) {
+            return Err(format!("import cycle involving module '{}'", key_name(key)));
         }
-        let Some(src) = by_module.get(name).copied() else {
+        let Some(src) = by_key.get(key).copied() else {
             return Ok(()); // import of a module not among the inputs: ignore
         };
-        stack.push(name.to_string());
+        stack.push(key.clone());
         for dep in imports_of(src) {
-            visit(&dep, by_module, done, stack, ordered)?;
+            if let Some(dep_key) = named.get(&dep) {
+                visit(dep_key, by_key, named, done, stack, ordered)?;
+            }
         }
         stack.pop();
-        done.insert(name.to_string());
+        done.insert(key.clone());
         ordered.push(src);
         Ok(())
     }
-    for (_, src) in sources {
-        visit(&module_of(src), &by_module, &mut done, &mut Vec::new(), &mut ordered)?;
+    for key in &keys {
+        visit(key, &by_key, &named, &mut done, &mut Vec::new(), &mut ordered)?;
     }
     Ok(ordered.join("\n"))
 }
