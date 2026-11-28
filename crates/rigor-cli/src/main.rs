@@ -391,6 +391,68 @@ fn cmd_verify(args: &Args) -> ExitCode {
     receipt_exit(&receipt)
 }
 
+fn verdict_from_str(s: &str) -> VerifyVerdict {
+    match s {
+        "VERIFIED_MATCHED" => VerifyVerdict::VerifiedMatched,
+        "VERIFIED_SELF_STATED" => VerifyVerdict::VerifiedSelfStated,
+        "INVALID" => VerifyVerdict::Invalid,
+        "UNSUPPORTED" => VerifyVerdict::Unsupported,
+        "UNKNOWN_RESOURCE" => VerifyVerdict::UnknownResource,
+        _ => VerifyVerdict::InternalError,
+    }
+}
+
+fn receipt_from_json_value(value: &json::Json) -> Option<Receipt> {
+    let verdict = verdict_from_str(value.get("verdict")?.as_str()?);
+    let string_field = |key: &str| value.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let u64_field = |key: &str| match value.get(key) {
+        Some(json::Json::Number(n)) => n.parse().unwrap_or(0),
+        _ => 0,
+    };
+    Some(Receipt {
+        verdict,
+        roots: Vec::new(),
+        profile: string_field("profile"),
+        checker_build: string_field("checker_build"),
+        policy: string_field("policy"),
+        verification_key: string_field("verification_key"),
+        challenge_id: value.get("challenge_id").and_then(|v| v.as_str()).map(str::to_string),
+        covered_dependencies: Vec::new(),
+        kernel_steps: u64_field("kernel_steps"),
+        wall_ms: u64_field("wall_ms"),
+        workers: u64_field("workers") as usize,
+        bundle_bytes: u64_field("bundle_bytes") as usize,
+    })
+}
+
+/// Read either one receipt object or the array emitted by `rigor check` for
+/// multiple authored challenges. For explanation, surface the worst verdict
+/// rather than accidentally reporting only the first challenge.
+fn receipt_report_from_json(text: &str) -> Option<Receipt> {
+    let parsed = json::parse(text).ok()?;
+    let receipts: Vec<Receipt> = match &parsed {
+        json::Json::Object(_) => vec![receipt_from_json_value(&parsed)?],
+        json::Json::Array(items) => {
+            if items.is_empty() {
+                return None;
+            }
+            items.iter().map(receipt_from_json_value).collect::<Option<Vec<_>>>()?
+        }
+        _ => return None,
+    };
+    for verdict in [
+        VerifyVerdict::Invalid,
+        VerifyVerdict::Unsupported,
+        VerifyVerdict::UnknownResource,
+        VerifyVerdict::InternalError,
+    ] {
+        if let Some(r) = receipts.iter().find(|r| r.verdict == verdict) {
+            return Some(r.clone());
+        }
+    }
+    receipts.into_iter().next()
+}
+
 fn cmd_explain(args: &Args) -> ExitCode {
     if args.positional.len() != 1 {
         return err_exit("usage: rigor explain <bundle.rigorb> [--receipt r.rigorr] [--assumptions] [--coercions]");
@@ -405,7 +467,7 @@ fn cmd_explain(args: &Args) -> ExitCode {
     };
     let receipt: Option<Receipt> = match args.flags.get("receipt") {
         Some(path) => match read_text(path) {
-            Ok(t) => Receipt::from_json(&t),
+            Ok(t) => receipt_report_from_json(&t),
             Err(e) => return err_exit(e),
         },
         None => None,

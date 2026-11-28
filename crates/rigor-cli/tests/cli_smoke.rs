@@ -102,7 +102,19 @@ fn check_verifies_every_authored_challenge() {
          challenge second := beta_root, missing_root\n",
     )
     .unwrap();
-    let out = rigor().args(["check", src.to_str().unwrap()]).output().unwrap();
+    let bundle = dir.join("demo.rigorb");
+    let receipt = dir.join("demo.rigorr");
+    let out = rigor()
+        .args([
+            "check",
+            src.to_str().unwrap(),
+            "-o",
+            bundle.to_str().unwrap(),
+            "--receipt",
+            receipt.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
     assert_eq!(
         out.status.code(),
         Some(1),
@@ -111,6 +123,13 @@ fn check_verifies_every_authored_challenge() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("missing_root"), "later challenge was not verified: {stdout}");
+    let out = rigor()
+        .args(["explain", bundle.to_str().unwrap(), "--receipt", receipt.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "explain failed: {}", String::from_utf8_lossy(&out.stderr));
+    let explained = String::from_utf8_lossy(&out.stdout);
+    assert!(explained.contains("verdict Invalid"), "explain hid the later challenge failure: {explained}");
     let _ = fs::remove_dir_all(&dir);
 }
 
