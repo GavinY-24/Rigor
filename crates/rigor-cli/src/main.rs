@@ -243,10 +243,26 @@ fn receipt_exit(receipt: &Receipt) -> ExitCode {
     }
 }
 
+fn receipts_exit(receipts: &[Receipt]) -> ExitCode {
+    if receipts.iter().any(|r| r.verdict == VerifyVerdict::Invalid) {
+        return ExitCode::from(1);
+    }
+    if receipts.iter().any(|r| r.verdict == VerifyVerdict::Unsupported) {
+        return ExitCode::from(2);
+    }
+    if receipts.iter().any(|r| r.verdict == VerifyVerdict::UnknownResource) {
+        return ExitCode::from(3);
+    }
+    if receipts.iter().all(|r| r.verdict.is_verified()) {
+        return ExitCode::SUCCESS;
+    }
+    ExitCode::from(5)
+}
+
 /// Fast agent/development loop: compile sources and verify the resulting
 /// bundle in one command, without requiring callers to manage intermediate
-/// artifact paths. Any authored `challenge` declaration is used; an explicit
-/// `--challenge NAME` instead seals all theorem roots under that name.
+/// artifact paths. Every authored `challenge` declaration is checked; an
+/// explicit `--challenge NAME` instead seals all theorem roots under that name.
 fn cmd_check(args: &Args) -> ExitCode {
     if args.positional.is_empty() {
         return err_exit("usage: rigor check <file.rigor...> [--challenge NAME] [--policy P] [--workers N] [--cache DIR] [-o out.rigorb] [--receipt out.rigorr]");
@@ -265,9 +281,10 @@ fn cmd_check(args: &Args) -> ExitCode {
             return err_exit(e);
         }
     }
-    let challenge = match args.flags.get("challenge") {
-        Some(name) => Some(Challenge::from_bundle(name, &m.bundle, &m.roots, &policy_name)),
-        None => m.challenges.first().cloned(),
+    let challenges: Vec<Option<Challenge>> = match args.flags.get("challenge") {
+        Some(name) => vec![Some(Challenge::from_bundle(name, &m.bundle, &m.roots, &policy_name))],
+        None if m.challenges.is_empty() => vec![None],
+        None => m.challenges.iter().cloned().map(Some).collect(),
     };
     let mut opts = VerifyOptions::default();
     if let Some(w) = args.flags.get("workers") {
@@ -278,14 +295,28 @@ fn cmd_check(args: &Args) -> ExitCode {
         Some(dir) => VerifyCache::with_disk(PathBuf::from(dir)),
         None => VerifyCache::new(),
     };
-    let receipt = verify_bundle(&m.bundle_bytes, challenge.as_ref(), &policy, &opts, Some(&mut cache));
-    println!("{}", receipt.to_json());
+    let mut receipts = Vec::new();
+    for challenge in &challenges {
+        receipts.push(verify_bundle(
+            &m.bundle_bytes,
+            challenge.as_ref(),
+            &policy,
+            &opts,
+            Some(&mut cache),
+        ));
+    }
+    let output = if receipts.len() == 1 {
+        receipts[0].to_json()
+    } else {
+        format!("[\n{}\n]", receipts.iter().map(|r| r.to_json()).collect::<Vec<_>>().join(",\n"))
+    };
+    println!("{output}");
     if let Some(out) = args.flags.get("receipt") {
-        if let Err(e) = write_out(Some(out), receipt.to_json().as_bytes()) {
+        if let Err(e) = write_out(Some(out), output.as_bytes()) {
             return err_exit(e);
         }
     }
-    receipt_exit(&receipt)
+    receipts_exit(&receipts)
 }
 
 fn cmd_seal(args: &Args) -> ExitCode {

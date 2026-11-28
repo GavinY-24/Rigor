@@ -90,6 +90,31 @@ fn check_compiles_and_verifies_in_one_command() {
 }
 
 #[test]
+fn check_verifies_every_authored_challenge() {
+    let dir = workdir("multi-challenge");
+    let src = dir.join("demo.rigor");
+    fs::write(
+        &src,
+        "module MultiChallenge\n\
+         theorem alpha_root : 1 = 1 := by\n  trivial\n\
+         theorem beta_root : 2 = 2 := by\n  trivial\n\
+         challenge first := alpha_root\n\
+         challenge second := beta_root, missing_root\n",
+    )
+    .unwrap();
+    let out = rigor().args(["check", src.to_str().unwrap()]).output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "missing root in the later challenge must fail check: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("missing_root"), "later challenge was not verified: {stdout}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_includes_multiple_unnamed_input_files() {
     let dir = workdir("unnamed-inputs");
     let a = dir.join("a.rigor");

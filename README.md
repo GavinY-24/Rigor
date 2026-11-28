@@ -60,8 +60,9 @@ rigor bench
 
 `rigor check` is the fast development loop: compile and independently verify
 in one process, with machine-readable receipts and no intermediate artifact
-management. Use `build` when the bundle or challenge file itself is the
-desired artifact.
+management. Every authored `challenge` is checked; multiple challenges produce
+a JSON array of receipts and the exit code is the worst result. Use `build`
+when the bundle or challenge file itself is the desired artifact.
 
 Surface files name their dependencies with `import`. `rigor build` and
 `rigor check` order them and compile them as one unit, because declaration
