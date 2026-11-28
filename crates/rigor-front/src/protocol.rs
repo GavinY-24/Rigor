@@ -75,6 +75,7 @@ struct Session {
     current_state: Option<String>,
     nonce: u64,
     sealed: Vec<(String, SealedBundle)>,
+    sealed_proofs: HashMap<String, String>,
     pending_roots: Vec<String>,
 }
 
@@ -137,6 +138,7 @@ impl Machine {
                 current_state: None,
                 nonce: 0,
                 sealed: Vec::new(),
+                sealed_proofs: HashMap::new(),
                 pending_roots: Vec::new(),
             },
         }
@@ -477,6 +479,22 @@ impl Machine {
             Ok(p) => p,
             Err(e) => return self.err(e),
         };
+        let proof_text = format!("{proof_open:?}");
+        let proof_key = rigor_spec::sha256::to_hex(&domain_hash(
+            "RIGOR_PROTO_PROOF_V1\0".as_bytes(),
+            &[proof_text.as_bytes()],
+        ));
+        if let Some((_, prior)) = self.session.sealed.iter().find(|(n, _)| n == &name) {
+            if self.session.sealed_proofs.get(&name) == Some(&proof_key) {
+                let prior = prior.clone();
+                let mut resp = self.ok(&st, format!("sealed theorem '{name}'"));
+                resp.sealed = Some(prior);
+                return resp;
+            }
+            return self.err(format!(
+                "theorem '{name}' is already sealed with a different proof in this session"
+            ));
+        }
         // Record the checking ticket and admit to the kernel.
         if let Err(e) = crate::emit_theorem_ticket(&mut self.session.elab, &ctx, &proof_open, &target) {
             return self.err(e);
@@ -509,6 +527,7 @@ impl Machine {
             statement_id: sids.get(&name).map(|s| s.to_hex()),
         };
         self.session.sealed.push((name.clone(), sealed.clone()));
+        self.session.sealed_proofs.insert(name.clone(), proof_key);
         let mut resp = self.ok(&st, format!("sealed theorem '{name}'"));
         resp.sealed = Some(sealed);
         resp

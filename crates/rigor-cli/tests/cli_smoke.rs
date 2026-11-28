@@ -106,6 +106,38 @@ fn json_string(s: &str) -> String {
 }
 
 #[test]
+fn machine_seal_retry_after_output_error() {
+    let dir = workdir("seal-retry");
+    let bad = dir.join("missing").join("out.rigorb");
+    let good = dir.join("out.rigorb");
+    let source = "theorem retry_goal : 1 = 1 := by\n  trivial\n";
+    let input = format!(
+        "{{\"op\":\"open\",\"source\":{}}}\n{{\"op\":\"apply\",\"tactic\":\"trivial\"}}\n{{\"op\":\"seal\",\"verify\":true,\"path\":{},\"include_bundle\":false}}\n{{\"op\":\"seal\",\"verify\":true,\"path\":{},\"include_bundle\":false}}\n{{\"op\":\"quit\"}}\n",
+        json_string(source),
+        json_string(bad.to_str().unwrap()),
+        json_string(good.to_str().unwrap())
+    );
+    let mut child = rigor()
+        .arg("machine")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(input.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "machine failed: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 4, "unexpected responses: {stdout}");
+    assert!(lines[2].contains("\"ok\":false"), "first output path must fail: {}", lines[2]);
+    assert!(lines[2].contains("cannot write bundle"), "first seal response: {}", lines[2]);
+    assert!(lines[3].contains("\"ok\":true"), "corrected retry must reuse the admitted proof: {}", lines[3]);
+    assert!(good.exists(), "corrected retry did not write the bundle");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn machine_jsonl_opens_suggests_proves_and_seals() {
     let source = "theorem add_comm2 (given x y : Nat) : x + y = y + x := by\n  trivial\n";
     let input = format!(
