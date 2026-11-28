@@ -180,9 +180,20 @@ impl Machine {
         self.session.states.get(&id).cloned().ok_or_else(|| "state vanished".to_string())
     }
 
+    fn sync_current_level_scope(&mut self) {
+        let levels = self.session.current.as_ref().map(|c| c.3.clone()).unwrap_or_default();
+        self.session.elab.level_scope = levels;
+    }
+
     pub fn execute(&mut self, cmd: Command) -> Response {
         match cmd {
-            Command::Open { source } => self.cmd_open(&source),
+            Command::Open { source } => {
+                let response = self.cmd_open(&source);
+                if !response.ok {
+                    self.sync_current_level_scope();
+                }
+                response
+            }
             Command::Inspect => match self.current_state() {
                 Ok(st) => {
                     let id = self.session.current_state.clone().unwrap_or_default();
@@ -207,6 +218,7 @@ impl Machine {
                     None => return self.err("state has no owning theorem"),
                 };
                 self.session.current = Some(owner);
+                self.sync_current_level_scope();
                 self.session.current_state = Some(state_id.clone());
                 let st = self.session.states[&state_id].clone();
                 Response {
@@ -248,6 +260,7 @@ impl Machine {
                 }
             }
             Command::Apply { tactic } | Command::Refine { tactic } => {
+                self.sync_current_level_scope();
                 let mut st = match self.current_state() {
                     Ok(s) => s,
                     Err(e) => return self.err(e),
@@ -265,6 +278,7 @@ impl Machine {
                 }
             }
             Command::SubmitCert { plugin, args } => {
+                self.sync_current_level_scope();
                 let mut st = match self.current_state() {
                     Ok(s) => s,
                     Err(e) => return self.err(e),

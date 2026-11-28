@@ -295,6 +295,46 @@ fn protocol_open_supports_universe_levels() {
 }
 
 #[test]
+fn protocol_restore_reselects_universe_scope() {
+    let mut machine = Machine::new();
+    let universe_source = r#"
+def idf.{u} (given alpha : Type.{u}) (given a : alpha) : alpha := a
+theorem use_id.{u} (given alpha : Type.{u}) (given a : alpha) : alpha := by
+  trivial
+"#;
+    let r = machine.execute(Command::Open { source: universe_source.to_string() });
+    assert!(r.ok, "open universe theorem failed: {}", r.message);
+    let universe_state = r.state_id.clone();
+
+    let r = machine.execute(Command::Open {
+        source: "theorem plain_scope : 1 = 1 := by\n  trivial\n".to_string(),
+    });
+    assert!(r.ok, "open plain theorem failed: {}", r.message);
+    let r = machine.execute(Command::Restore { state_id: universe_state });
+    assert!(r.ok, "restore failed: {}", r.message);
+    let r = machine.execute(Command::Apply { tactic: "exact idf.{u} alpha a".into() });
+    assert!(r.ok, "restored universe scope rejected a valid level parameter: {}", r.message);
+}
+
+#[test]
+fn protocol_failed_open_preserves_current_universe_scope() {
+    let mut machine = Machine::new();
+    let universe_source = r#"
+def idf.{u} (given alpha : Type.{u}) (given a : alpha) : alpha := a
+theorem use_id.{u} (given alpha : Type.{u}) (given a : alpha) : alpha := by
+  trivial
+"#;
+    let r = machine.execute(Command::Open { source: universe_source.to_string() });
+    assert!(r.ok, "open universe theorem failed: {}", r.message);
+    let r = machine.execute(Command::Open {
+        source: "theorem broken.{v} : missing = missing := by\n  trivial\n".to_string(),
+    });
+    assert!(!r.ok, "invalid theorem unexpectedly opened");
+    let r = machine.execute(Command::Apply { tactic: "exact idf.{u} alpha a".into() });
+    assert!(r.ok, "failed open corrupted the current theorem's level scope: {}", r.message);
+}
+
+#[test]
 fn protocol_open_supports_inductive_prelude() {
     let mut machine = Machine::new();
     let r = machine.execute(Command::Open {
