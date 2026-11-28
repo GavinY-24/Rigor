@@ -203,6 +203,58 @@ fn check_includes_multiple_unnamed_input_files() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn check_ignores_header_words_inside_multiline_strings() {
+    let dir = workdir("string-header-words");
+    let a = dir.join("a.rigor");
+    fs::write(
+        &a,
+        "module A
+def s : String := \"some text\nimport A to get started\nmodule A prose\"\ntheorem ok : 1 = 1 := by\n  trivial\n",
+    )
+    .unwrap();
+    let out = rigor().args(["check", a.to_str().unwrap()]).output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "header words inside a string must not become module dependencies: stdout {} stderr {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_reads_multiple_import_declarations_on_one_line() {
+    let dir = workdir("shared-line-imports");
+    let a = dir.join("a.rigor");
+    let b = dir.join("b.rigor");
+    let c = dir.join("c.rigor");
+    let d = dir.join("d.rigor");
+    fs::write(&a, "module A\nimport B import C, D\ntheorem ok : dval = 1 := by\n  trivial\n").unwrap();
+    fs::write(&b, "module B\ndef bval : Nat := 1\n").unwrap();
+    fs::write(&c, "module C\ndef cval : Nat := 1\n").unwrap();
+    fs::write(&d, "module D\ndef dval : Nat := 1\n").unwrap();
+    let out = rigor()
+        .args([
+            "check",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            c.to_str().unwrap(),
+            d.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "shared-line imports were not all ordered first: stdout {} stderr {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
 fn json_string(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
