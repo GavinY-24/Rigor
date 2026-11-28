@@ -5,6 +5,9 @@
 //! 2 = UNSUPPORTED, 3 = UNKNOWN_RESOURCE, 4 = usage/IO error, 5 = other
 //! verdicts / internal errors.
 
+mod json;
+mod machine;
+
 use rigor_bridges::{diff_bundles, explain, export_bundle_exchange, import_exchange, render_diff, ExplainOpts};
 use rigor_codec::{decode_bundle, decode_challenge, encode_bundle, encode_challenge, Challenge};
 use rigor_spec::DecoderLimits;
@@ -92,81 +95,110 @@ fn policy_of(args: &Args) -> Result<Policy, String> {
 /// concatenate into one compilation unit (declaration names are global).
 /// Files are visited in CLI order; the sort is stable.
 fn order_sources(sources: &[(String, String)]) -> Result<String, String> {
+    fn parsed_decls(src: &str) -> Vec<rigor_front::SDecl> {
+        rigor_front::parse_source(src).unwrap_or_default()
+    }
     fn module_of(src: &str) -> String {
-        src.lines()
-            .map(|l| l.trim())
-            .find_map(|l| l.strip_prefix("module "))
-            .map(|m| m.trim().to_string())
+        parsed_decls(src)
+            .iter()
+            .find_map(|d| match d {
+                rigor_front::SDecl::Module { name } => Some(name.clone()),
+                _ => None,
+            })
             .unwrap_or_default()
     }
     fn imports_of(src: &str) -> Vec<String> {
-        let mut out = Vec::new();
-        for line in src.lines() {
-            if let Some(rest) = line.trim().strip_prefix("import ") {
-                for dep in rest.split(',') {
-                    let dep = dep.trim();
-                    if !dep.is_empty() {
-                        out.push(dep.to_string());
-                    }
-                }
+        parsed_decls(src)
+            .iter()
+            .flat_map(|d| match d {
+                rigor_front::SDecl::Import { modules } => modules.clone(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    #[derive(Clone, PartialEq, Eq, Hash)]
+    enum SourceKey {
+        Named(String),
+        Unnamed(usize),
+    }
+    fn key_name(key: &SourceKey) -> String {
+        match key {
+            SourceKey::Named(name) => name.clone(),
+            SourceKey::Unnamed(index) => format!("<unnamed input {index}>"),
+        }
+    }
+
+    let mut keys = Vec::new();
+    let mut by_key: std::collections::HashMap<SourceKey, &str> = Default::default();
+    let mut named: std::collections::HashMap<String, SourceKey> = Default::default();
+    for (index, (_, src)) in sources.iter().enumerate() {
+        let module = module_of(src);
+        let key = if module.is_empty() {
+            SourceKey::Unnamed(index)
+        } else {
+            SourceKey::Named(module.clone())
+        };
+        if let SourceKey::Named(name) = &key {
+            if named.insert(name.clone(), key.clone()).is_some() {
+                return Err(format!("duplicate module '{name}' among input files"));
             }
         }
-        out
+        by_key.insert(key.clone(), src.as_str());
+        keys.push(key);
     }
-    let mut by_module: std::collections::HashMap<String, &str> = Default::default();
-    for (_, src) in sources {
-        by_module.insert(module_of(src), src.as_str());
-    }
+
     let mut ordered: Vec<&str> = Vec::new();
-    let mut done: std::collections::HashSet<String> = Default::default();
+    let mut done: std::collections::HashSet<SourceKey> = Default::default();
     fn visit<'a>(
-        name: &str,
-        by_module: &std::collections::HashMap<String, &'a str>,
-        done: &mut std::collections::HashSet<String>,
-        stack: &mut Vec<String>,
+        key: &SourceKey,
+        by_key: &std::collections::HashMap<SourceKey, &'a str>,
+        named: &std::collections::HashMap<String, SourceKey>,
+        done: &mut std::collections::HashSet<SourceKey>,
+        stack: &mut Vec<SourceKey>,
         ordered: &mut Vec<&'a str>,
     ) -> Result<(), String> {
-        if done.contains(name) {
+        if done.contains(key) {
             return Ok(());
         }
-        if stack.iter().any(|s| s == name) {
-            return Err(format!("import cycle involving module '{name}'"));
+        if stack.iter().any(|k| k == key) {
+            return Err(format!("import cycle involving module '{}'", key_name(key)));
         }
-        let Some(src) = by_module.get(name).copied() else {
+        let Some(src) = by_key.get(key).copied() else {
             return Ok(()); // import of a module not among the inputs: ignore
         };
-        stack.push(name.to_string());
+        stack.push(key.clone());
         for dep in imports_of(src) {
-            visit(&dep, by_module, done, stack, ordered)?;
+            if let Some(dep_key) = named.get(&dep) {
+                visit(dep_key, by_key, named, done, stack, ordered)?;
+            }
         }
         stack.pop();
-        done.insert(name.to_string());
+        done.insert(key.clone());
         ordered.push(src);
         Ok(())
     }
-    for (_, src) in sources {
-        visit(&module_of(src), &by_module, &mut done, &mut Vec::new(), &mut ordered)?;
+    for key in &keys {
+        visit(key, &by_key, &named, &mut done, &mut Vec::new(), &mut ordered)?;
     }
     Ok(ordered.join("\n"))
+}
+
+fn compile_inputs(files: &[String], policy_name: &str) -> Result<rigor_front::CompiledModule, String> {
+    let mut sources = Vec::new();
+    for f in files {
+        sources.push((f.clone(), read_text(f)?));
+    }
+    let combined = order_sources(&sources)?;
+    rigor_front::compile_with(&combined, policy_name)
 }
 
 fn cmd_build(args: &Args) -> ExitCode {
     if args.positional.is_empty() {
         return err_exit("usage: rigor build <file.rigor...> [-o out.rigorb] [--challenge NAME] [--policy P]");
     }
-    let mut sources = Vec::new();
-    for f in &args.positional {
-        match read_text(f) {
-            Ok(s) => sources.push((f.clone(), s)),
-            Err(e) => return err_exit(e),
-        }
-    }
-    let combined = match order_sources(&sources) {
-        Ok(c) => c,
-        Err(e) => return err_exit(e),
-    };
     let policy_name = args.flags.get("policy").cloned().unwrap_or_else(|| "constructive".into());
-    match rigor_front::compile_with(&combined, &policy_name) {
+    match compile_inputs(&args.positional, &policy_name) {
         Ok(m) => {
             if let Some(out) = args.flags.get("o") {
                 if let Err(e) = write_out(Some(out), &m.bundle_bytes) {
@@ -199,6 +231,92 @@ fn cmd_build(args: &Args) -> ExitCode {
         }
         Err(e) => err_exit(e),
     }
+}
+
+fn receipt_exit(receipt: &Receipt) -> ExitCode {
+    match receipt.verdict {
+        v if v.is_verified() => ExitCode::SUCCESS,
+        VerifyVerdict::Invalid => ExitCode::from(1),
+        VerifyVerdict::Unsupported => ExitCode::from(2),
+        VerifyVerdict::UnknownResource => ExitCode::from(3),
+        _ => ExitCode::from(5),
+    }
+}
+
+fn receipts_exit(receipts: &[Receipt]) -> ExitCode {
+    if receipts.iter().any(|r| r.verdict == VerifyVerdict::Invalid) {
+        return ExitCode::from(1);
+    }
+    if receipts.iter().any(|r| r.verdict == VerifyVerdict::Unsupported) {
+        return ExitCode::from(2);
+    }
+    if receipts.iter().any(|r| r.verdict == VerifyVerdict::UnknownResource) {
+        return ExitCode::from(3);
+    }
+    if receipts.iter().all(|r| r.verdict.is_verified()) {
+        return ExitCode::SUCCESS;
+    }
+    ExitCode::from(5)
+}
+
+/// Fast agent/development loop: compile sources and verify the resulting
+/// bundle in one command, without requiring callers to manage intermediate
+/// artifact paths. Every authored `challenge` declaration is checked; an
+/// explicit `--challenge NAME` instead seals all theorem roots under that name.
+fn cmd_check(args: &Args) -> ExitCode {
+    if args.positional.is_empty() {
+        return err_exit("usage: rigor check <file.rigor...> [--challenge NAME] [--policy P] [--workers N] [--cache DIR] [-o out.rigorb] [--receipt out.rigorr]");
+    }
+    let policy = match policy_of(args) {
+        Ok(p) => p,
+        Err(e) => return err_exit(e),
+    };
+    let policy_name = args.flags.get("policy").cloned().unwrap_or_else(|| "constructive".into());
+    let m = match compile_inputs(&args.positional, &policy_name) {
+        Ok(m) => m,
+        Err(e) => return err_exit(e),
+    };
+    if let Some(out) = args.flags.get("o") {
+        if let Err(e) = write_out(Some(out), &m.bundle_bytes) {
+            return err_exit(e);
+        }
+    }
+    let challenges: Vec<Option<Challenge>> = match args.flags.get("challenge") {
+        Some(name) => vec![Some(Challenge::from_bundle(name, &m.bundle, &m.roots, &policy_name))],
+        None if m.challenges.is_empty() => vec![None],
+        None => m.challenges.iter().cloned().map(Some).collect(),
+    };
+    let mut opts = VerifyOptions::default();
+    if let Some(w) = args.flags.get("workers") {
+        opts.workers = w.parse().unwrap_or(1).max(1);
+    }
+    opts.independent = args.switches.contains("independent");
+    let mut cache = match args.flags.get("cache") {
+        Some(dir) => VerifyCache::with_disk(PathBuf::from(dir)),
+        None => VerifyCache::new(),
+    };
+    let mut receipts = Vec::new();
+    for challenge in &challenges {
+        receipts.push(verify_bundle(
+            &m.bundle_bytes,
+            challenge.as_ref(),
+            &policy,
+            &opts,
+            Some(&mut cache),
+        ));
+    }
+    let output = if receipts.len() == 1 {
+        receipts[0].to_json()
+    } else {
+        format!("[\n{}\n]", receipts.iter().map(|r| r.to_json()).collect::<Vec<_>>().join(",\n"))
+    };
+    println!("{output}");
+    if let Some(out) = args.flags.get("receipt") {
+        if let Err(e) = write_out(Some(out), output.as_bytes()) {
+            return err_exit(e);
+        }
+    }
+    receipts_exit(&receipts)
 }
 
 fn cmd_seal(args: &Args) -> ExitCode {
@@ -270,13 +388,69 @@ fn cmd_verify(args: &Args) -> ExitCode {
             return err_exit(e);
         }
     }
-    match receipt.verdict {
-        v if v.is_verified() => ExitCode::SUCCESS,
-        VerifyVerdict::Invalid => ExitCode::from(1),
-        VerifyVerdict::Unsupported => ExitCode::from(2),
-        VerifyVerdict::UnknownResource => ExitCode::from(3),
-        _ => ExitCode::from(5),
+    receipt_exit(&receipt)
+}
+
+fn verdict_from_str(s: &str) -> VerifyVerdict {
+    match s {
+        "VERIFIED_MATCHED" => VerifyVerdict::VerifiedMatched,
+        "VERIFIED_SELF_STATED" => VerifyVerdict::VerifiedSelfStated,
+        "INVALID" => VerifyVerdict::Invalid,
+        "UNSUPPORTED" => VerifyVerdict::Unsupported,
+        "UNKNOWN_RESOURCE" => VerifyVerdict::UnknownResource,
+        _ => VerifyVerdict::InternalError,
     }
+}
+
+fn receipt_from_json_value(value: &json::Json) -> Option<Receipt> {
+    let verdict = verdict_from_str(value.get("verdict")?.as_str()?);
+    let string_field = |key: &str| value.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let u64_field = |key: &str| match value.get(key) {
+        Some(json::Json::Number(n)) => n.parse().unwrap_or(0),
+        _ => 0,
+    };
+    Some(Receipt {
+        verdict,
+        roots: Vec::new(),
+        profile: string_field("profile"),
+        checker_build: string_field("checker_build"),
+        policy: string_field("policy"),
+        verification_key: string_field("verification_key"),
+        challenge_id: value.get("challenge_id").and_then(|v| v.as_str()).map(str::to_string),
+        covered_dependencies: Vec::new(),
+        kernel_steps: u64_field("kernel_steps"),
+        wall_ms: u64_field("wall_ms"),
+        workers: u64_field("workers") as usize,
+        bundle_bytes: u64_field("bundle_bytes") as usize,
+    })
+}
+
+/// Read either one receipt object or the array emitted by `rigor check` for
+/// multiple authored challenges. For explanation, surface the worst verdict
+/// rather than accidentally reporting only the first challenge.
+fn receipt_report_from_json(text: &str) -> Option<Receipt> {
+    let parsed = json::parse(text).ok()?;
+    let receipts: Vec<Receipt> = match &parsed {
+        json::Json::Object(_) => vec![receipt_from_json_value(&parsed)?],
+        json::Json::Array(items) => {
+            if items.is_empty() {
+                return None;
+            }
+            items.iter().map(receipt_from_json_value).collect::<Option<Vec<_>>>()?
+        }
+        _ => return None,
+    };
+    for verdict in [
+        VerifyVerdict::Invalid,
+        VerifyVerdict::Unsupported,
+        VerifyVerdict::UnknownResource,
+        VerifyVerdict::InternalError,
+    ] {
+        if let Some(r) = receipts.iter().find(|r| r.verdict == verdict) {
+            return Some(r.clone());
+        }
+    }
+    receipts.into_iter().next()
 }
 
 fn cmd_explain(args: &Args) -> ExitCode {
@@ -293,7 +467,7 @@ fn cmd_explain(args: &Args) -> ExitCode {
     };
     let receipt: Option<Receipt> = match args.flags.get("receipt") {
         Some(path) => match read_text(path) {
-            Ok(t) => Receipt::from_json(&t),
+            Ok(t) => receipt_report_from_json(&t),
             Err(e) => return err_exit(e),
         },
         None => None,
@@ -403,7 +577,7 @@ fn cmd_bench(args: &Args) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-const USAGE: &str = "rigor — the Rigor proof language (L36 profile)\n\nusage:\n  rigor build <file.rigor...> [-o out.rigorb] [--challenge NAME] [--policy P]\n  rigor seal <in.rigorb> [--name NAME] [--policy P] [-o out.rigorc]\n  rigor verify <bundle.rigorb> [--challenge c.rigorc] [--policy P] [--workers N] [--independent] [--cache DIR] [--receipt out.rigorr]\n  rigor explain <bundle.rigorb> [--receipt r.rigorr] [--assumptions] [--coercions]\n  rigor import <file.rigx> [-o out.rigorb] [--pin-override]\n  rigor export <bundle.rigorb> [-o out.rigx]\n  rigor diff <old.rigorb> <new.rigorb>\n  rigor bench [--json]\n";
+const USAGE: &str = "rigor — the Rigor proof language (L36 profile)\n\nusage:\n  rigor check <file.rigor...> [--challenge NAME] [--policy P] [--workers N] [--cache DIR] [-o out.rigorb]\n  rigor machine            # agent-native JSONL proof session (alias: rigor ai)\n  rigor build <file.rigor...> [-o out.rigorb] [--challenge NAME] [--policy P]\n  rigor seal <in.rigorb> [--name NAME] [--policy P] [-o out.rigorc]\n  rigor verify <bundle.rigorb> [--challenge c.rigorc] [--policy P] [--workers N] [--independent] [--cache DIR] [--receipt out.rigorr]\n  rigor explain <bundle.rigorb> [--receipt r.rigorr] [--assumptions] [--coercions]\n  rigor import <file.rigx> [-o out.rigorb] [--pin-override]\n  rigor export <bundle.rigorb> [-o out.rigx]\n  rigor diff <old.rigorb> <new.rigorb>\n  rigor bench [--json]\n";
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().collect();
@@ -414,6 +588,7 @@ fn main() -> ExitCode {
     let args = parse_args(&argv[2..]);
     match argv[1].as_str() {
         "build" => cmd_build(&args),
+        "check" => cmd_check(&args),
         "seal" => cmd_seal(&args),
         "verify" => cmd_verify(&args),
         "explain" => cmd_explain(&args),
@@ -421,6 +596,7 @@ fn main() -> ExitCode {
         "export" => cmd_export(&args),
         "diff" => cmd_diff(&args),
         "bench" => cmd_bench(&args),
+        "machine" | "ai" => machine::run(),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             ExitCode::SUCCESS

@@ -70,21 +70,25 @@ pub fn evidence_id(statement: &StatementId, proof_bytes: &[u8], imported_proofs:
     EvidenceId(domain_hash(DOMAIN_EVIDENCE_ID, &fields))
 }
 
-/// VerificationKey binds checker build, profile, policy, covered roots and evidence closure.
-/// A repaired proof, a policy change, or a checker change therefore cannot inherit an attestation.
+/// VerificationKey binds checker build, profile, policy, challenge selection,
+/// covered roots and evidence closure. A repaired proof, a policy change, a
+/// changed challenge, or a checker change therefore cannot inherit an attestation.
 pub fn verification_key(
     checker_build: &str,
     profile: &str,
     policy_id: &[u8; 32],
     evidence: &EvidenceId,
+    challenge: Option<&ChallengeId>,
     covered_roots_sorted: &[[u8; 32]],
     ticket_rule_version: &str,
 ) -> VerificationKey {
+    let self_stated = b"self-stated";
     let mut fields: Vec<&[u8]> = vec![
         checker_build.as_bytes(),
         profile.as_bytes(),
         policy_id,
         &evidence.0,
+        challenge.map(|c| &c.0[..]).unwrap_or(self_stated),
         ticket_rule_version.as_bytes(),
     ];
     for r in covered_roots_sorted {

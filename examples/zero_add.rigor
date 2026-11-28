@@ -1,0 +1,8 @@
+module Examples.ZeroAdd
+
+theorem zero_add (given n : Nat) : 0 + n = n := by
+  induction n
+  case zero
+    trivial
+  case succ
+    trivial

@@ -205,6 +205,157 @@ theorem zero_add (given n : Nat) : 0 + n = n := by
 }
 
 #[test]
+fn protocol_suggest_and_restore() {
+    let mut machine = Machine::new();
+    let r = machine.execute(Command::Open {
+        source: r#"
+theorem zero_add (given n : Nat) : 0 + n = n := by
+  trivial
+"#
+        .to_string(),
+    });
+    assert!(r.ok, "open failed: {}", r.message);
+    assert!(r.suggestions.iter().any(|s| s.tactic == "solve poly"), "suggestions: {:?}", r.suggestions);
+    assert!(r.suggestions.iter().any(|s| s.tactic == "induction n"), "suggestions: {:?}", r.suggestions);
+    let initial = r.state_id.clone();
+
+    let r = machine.execute(Command::Apply { tactic: "induction n".into() });
+    assert!(r.ok, "induction failed: {}", r.message);
+    assert!(r.goals.len() > 1);
+
+    let r = machine.execute(Command::Restore { state_id: initial.clone() });
+    assert!(r.ok, "restore failed: {}", r.message);
+    assert_eq!(r.state_id, initial, "restoring an unchanged immutable state reuses its id");
+    assert_eq!(r.goals.len(), 1, "branching work must not leak into the restored state");
+
+    let r = machine.execute(Command::Suggest);
+    assert!(r.ok);
+    assert!(r.suggestions.iter().any(|s| s.tactic == "solve poly"));
+    let r = machine.execute(Command::Apply { tactic: "solve poly".into() });
+    assert!(r.ok, "suggested solve poly failed: {}", r.message);
+    assert!(r.goals.iter().all(|g| g.closed));
+}
+
+#[test]
+fn protocol_restore_reselects_owning_theorem() {
+    let mut machine = Machine::new();
+    let r = machine.execute(Command::Open {
+        source: "theorem first_goal : 1 = 1 := by\n  trivial\n".to_string(),
+    });
+    assert!(r.ok, "open first failed: {}", r.message);
+    let first_state = r.state_id.clone();
+
+    let r = machine.execute(Command::Open {
+        source: "theorem second_goal : 2 = 2 := by\n  trivial\n".to_string(),
+    });
+    assert!(r.ok, "open second failed: {}", r.message);
+    assert_eq!(r.theorem.as_deref(), Some("second_goal"));
+
+    let r = machine.execute(Command::Restore { state_id: first_state });
+    assert!(r.ok, "restore failed: {}", r.message);
+    assert_eq!(r.theorem.as_deref(), Some("first_goal"));
+    let r = machine.execute(Command::Apply { tactic: "trivial".into() });
+    assert!(r.ok, "trivial failed: {}", r.message);
+    let r = machine.execute(Command::Seal);
+    assert!(r.ok, "restored theorem must seal against its own statement: {}", r.message);
+}
+
+#[test]
+fn protocol_reseal_rejects_same_name_different_statement() {
+    let mut machine = Machine::new();
+    let first = "theorem same_name (assuming h : 1 = 1) : 1 = 1 := by\n  exact h\n";
+    let second = "theorem same_name (assuming h : 2 = 2) : 2 = 2 := by\n  exact h\n";
+    let r = machine.execute(Command::Open { source: first.to_string() });
+    assert!(r.ok, "open first failed: {}", r.message);
+    let r = machine.execute(Command::Apply { tactic: "exact h".into() });
+    assert!(r.ok, "first exact failed: {}", r.message);
+    let r = machine.execute(Command::Seal);
+    assert!(r.ok, "first seal failed: {}", r.message);
+
+    let r = machine.execute(Command::Open { source: second.to_string() });
+    assert!(r.ok, "open second failed: {}", r.message);
+    let r = machine.execute(Command::Apply { tactic: "exact h".into() });
+    assert!(r.ok, "second exact failed: {}", r.message);
+    let r = machine.execute(Command::Seal);
+    assert!(!r.ok, "a different statement must not reuse the first theorem bundle");
+    assert!(r.sealed.is_none(), "conflicting seal returned a bundle");
+}
+
+#[test]
+fn protocol_open_supports_universe_levels() {
+    let mut machine = Machine::new();
+    let r = machine.execute(Command::Open {
+        source: "theorem id_key.{u} (given alpha : Type.{u}) (given a : alpha) : a = a := by\n  trivial\n".to_string(),
+    });
+    assert!(r.ok, "open failed: {}", r.message);
+    let r = machine.execute(Command::Apply { tactic: "trivial".into() });
+    assert!(r.ok, "trivial failed: {}", r.message);
+    let r = machine.execute(Command::Seal);
+    assert!(r.ok, "seal failed: {}", r.message);
+}
+
+#[test]
+fn protocol_restore_reselects_universe_scope() {
+    let mut machine = Machine::new();
+    let universe_source = r#"
+def idf.{u} (given alpha : Type.{u}) (given a : alpha) : alpha := a
+theorem use_id.{u} (given alpha : Type.{u}) (given a : alpha) : alpha := by
+  trivial
+"#;
+    let r = machine.execute(Command::Open { source: universe_source.to_string() });
+    assert!(r.ok, "open universe theorem failed: {}", r.message);
+    let universe_state = r.state_id.clone();
+
+    let r = machine.execute(Command::Open {
+        source: "theorem plain_scope : 1 = 1 := by\n  trivial\n".to_string(),
+    });
+    assert!(r.ok, "open plain theorem failed: {}", r.message);
+    let r = machine.execute(Command::Restore { state_id: universe_state });
+    assert!(r.ok, "restore failed: {}", r.message);
+    let r = machine.execute(Command::Apply { tactic: "exact idf.{u} alpha a".into() });
+    assert!(r.ok, "restored universe scope rejected a valid level parameter: {}", r.message);
+}
+
+#[test]
+fn protocol_failed_open_preserves_current_universe_scope() {
+    let mut machine = Machine::new();
+    let universe_source = r#"
+def idf.{u} (given alpha : Type.{u}) (given a : alpha) : alpha := a
+theorem use_id.{u} (given alpha : Type.{u}) (given a : alpha) : alpha := by
+  trivial
+"#;
+    let r = machine.execute(Command::Open { source: universe_source.to_string() });
+    assert!(r.ok, "open universe theorem failed: {}", r.message);
+    let r = machine.execute(Command::Open {
+        source: "theorem broken.{v} : missing = missing := by\n  trivial\n".to_string(),
+    });
+    assert!(!r.ok, "invalid theorem unexpectedly opened");
+    let r = machine.execute(Command::Apply { tactic: "exact idf.{u} alpha a".into() });
+    assert!(r.ok, "failed open corrupted the current theorem's level scope: {}", r.message);
+}
+
+#[test]
+fn protocol_open_supports_inductive_prelude() {
+    let mut machine = Machine::new();
+    let r = machine.execute(Command::Open {
+        source: r#"
+inductive Pair2 : Type :=
+  | mk (given a : Nat) (given b : Nat) : Pair2
+
+def getA (given p : Pair2) : Nat := p.a
+
+theorem pair_project : getA (Pair2.mk 3 4) = 3 := by
+  trivial
+"#
+        .to_string(),
+    });
+    assert!(r.ok, "open failed: {}", r.message);
+    let r = machine.execute(Command::Apply { tactic: "trivial".into() });
+    assert!(r.ok, "trivial projection failed: {}", r.message);
+    assert!(r.goals.iter().all(|g| g.closed));
+}
+
+#[test]
 fn sorry_is_rejected() {
     let res = compile(
         r#"

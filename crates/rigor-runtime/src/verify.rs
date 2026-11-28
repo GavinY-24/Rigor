@@ -481,11 +481,13 @@ pub fn verify_bundle(
     };
     let first_stmt = covered_stmt.first().copied().unwrap_or([0u8; 32]);
     let bundle_evidence = ids::evidence_id(&StatementId(first_stmt), &combined_proof, &effective.evidence_refs);
+    let challenge_id = challenge.map(|c| c.challenge_id());
     let vkey = ids::verification_key(
         rigor_spec::CHECKER_BUILD_ID,
         &effective.profile,
         &policy.policy_id(),
         &bundle_evidence,
+        challenge_id.as_ref(),
         &covered_stmt,
         "TKT-1",
     );
