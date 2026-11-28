@@ -479,10 +479,23 @@ impl Machine {
             Ok(p) => p,
             Err(e) => return self.err(e),
         };
+        let context_key = format!(
+            "{:?}",
+            ctx.iter()
+                .map(|l| (&l.name, &l.ty, &l.value, l.assuming))
+                .collect::<Vec<_>>()
+        );
+        let target_key = format!("{target:?}");
+        let levels_key = format!("{levels:?}");
         let proof_text = format!("{proof_open:?}");
         let proof_key = rigor_spec::sha256::to_hex(&domain_hash(
             "RIGOR_PROTO_PROOF_V1\0".as_bytes(),
-            &[proof_text.as_bytes()],
+            &[
+                context_key.as_bytes(),
+                target_key.as_bytes(),
+                levels_key.as_bytes(),
+                proof_text.as_bytes(),
+            ],
         ));
         if let Some((_, prior)) = self.session.sealed.iter().find(|(n, _)| n == &name) {
             if self.session.sealed_proofs.get(&name) == Some(&proof_key) {

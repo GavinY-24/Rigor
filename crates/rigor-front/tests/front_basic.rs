@@ -261,6 +261,27 @@ fn protocol_restore_reselects_owning_theorem() {
 }
 
 #[test]
+fn protocol_reseal_rejects_same_name_different_statement() {
+    let mut machine = Machine::new();
+    let first = "theorem same_name (assuming h : 1 = 1) : 1 = 1 := by\n  exact h\n";
+    let second = "theorem same_name (assuming h : 2 = 2) : 2 = 2 := by\n  exact h\n";
+    let r = machine.execute(Command::Open { source: first.to_string() });
+    assert!(r.ok, "open first failed: {}", r.message);
+    let r = machine.execute(Command::Apply { tactic: "exact h".into() });
+    assert!(r.ok, "first exact failed: {}", r.message);
+    let r = machine.execute(Command::Seal);
+    assert!(r.ok, "first seal failed: {}", r.message);
+
+    let r = machine.execute(Command::Open { source: second.to_string() });
+    assert!(r.ok, "open second failed: {}", r.message);
+    let r = machine.execute(Command::Apply { tactic: "exact h".into() });
+    assert!(r.ok, "second exact failed: {}", r.message);
+    let r = machine.execute(Command::Seal);
+    assert!(!r.ok, "a different statement must not reuse the first theorem bundle");
+    assert!(r.sealed.is_none(), "conflicting seal returned a bundle");
+}
+
+#[test]
 fn protocol_open_supports_inductive_prelude() {
     let mut machine = Machine::new();
     let r = machine.execute(Command::Open {
