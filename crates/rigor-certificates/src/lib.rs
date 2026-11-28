@@ -8,6 +8,7 @@ pub mod certificates;
 pub mod intervals;
 pub mod linarith;
 pub mod poly;
+pub mod real;
 pub mod sat;
 pub mod stdlib;
 

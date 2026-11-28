@@ -1,0 +1,7 @@
+module Examples.RealZero
+
+theorem real_zero_eq_zero : Real.eq Real.zero Real.zero := by
+  exact Real.eq_zero_zero
+
+theorem complex_i_im : Complex.im Complex.i = Real.one := by
+  exact Complex.i_im

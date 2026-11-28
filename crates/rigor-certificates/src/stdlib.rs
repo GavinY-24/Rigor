@@ -2026,5 +2026,6 @@ fn add_int_rat(k: &mut Kernel) -> Result<(), String> {
             ),
         ),
     )?;
+    crate::real::bootstrap_real(k)?;
     Ok(())
 }
