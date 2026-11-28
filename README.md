@@ -76,6 +76,19 @@ are the quotient package; `Quot.sound` is an axiom, so the constructive
 policy rejects any root that reaches it and the classical policy accepts
 it and reports the assumption.
 
+## Analysis foundation
+
+The bootstrap library now contains the first checked step toward real and
+complex analysis. `Real` is a bundled Cauchy sequence of rational
+representatives together with proofs that every denominator is positive and
+that the sequence is Cauchy; `Real.eq` is eventual closeness of
+representatives. The library proves the Cauchy/validity obligations for the
+zero and one constant sequences and proves `Real.eq Real.zero Real.zero`.
+`Complex` is an ordered pair of reals, with checked `Complex.zero` and
+`Complex.i` constants. This is a foundation, not yet a real-closed field or
+analysis library: addition, multiplication, limits, and completeness still
+need their Cauchy-sequence correctness proofs.
+
 ## Conformance
 
 `crates/rigor-cli/tests/conformance.rs` is the must-pass list: the

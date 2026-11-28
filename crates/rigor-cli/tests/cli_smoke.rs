@@ -72,3 +72,21 @@ fn build_verify_and_corruption_exit_codes() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn real_zero_example_builds_and_verifies() {
+    let dir = workdir("real-zero");
+    let bundle = dir.join("real_zero.rigorb");
+    let source = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/real_zero.rigor");
+    let out = rigor()
+        .args(["build", source, "-o", bundle.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "build failed: {}", String::from_utf8_lossy(&out.stderr));
+    let out = rigor().args(["verify", bundle.to_str().unwrap()]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "verify failed: {}", String::from_utf8_lossy(&out.stdout));
+    let checker = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ref_checker/rigor_check.py");
+    let out = Command::new("python3").args([checker, bundle.to_str().unwrap()]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "independent checker failed: {}", String::from_utf8_lossy(&out.stdout));
+    let _ = fs::remove_dir_all(&dir);
+}
