@@ -11,6 +11,7 @@
 use crate::ast::{SolveKind, Tactic};
 use crate::elab::{Elab, ProofState};
 use crate::parser::{parse_source, parse_tactics_text};
+use crate::suggest::{suggest_goal, Suggestion};
 use crate::{CompiledModule, SDecl, TheoremProof};
 use rigor_certificates::bootstrap_kernel;
 use rigor_codec::{encode_bundle, encode_kernel, Challenge};
@@ -22,6 +23,12 @@ use std::collections::HashMap;
 pub enum Command {
     Open { source: String },
     Inspect,
+    /// Move the current state pointer back to a previously returned immutable
+    /// state id. Stored states themselves never change.
+    Restore { state_id: String },
+    /// Return deterministic tactic hints for the focused goal without
+    /// changing the proof state.
+    Suggest,
     Fork { goal_tag: String },
     Apply { tactic: String },
     Refine { tactic: String },
@@ -45,6 +52,7 @@ pub struct Response {
     pub message: String,
     pub goals: Vec<GoalView>,
     pub theorem: Option<String>,
+    pub suggestions: Vec<Suggestion>,
     pub sealed: Option<SealedBundle>,
 }
 
@@ -128,17 +136,24 @@ impl Machine {
     }
 
     fn err(&self, msg: impl Into<String>) -> Response {
+        let state = self.current_state().ok();
         Response {
             state_id: self.session.current_state.clone().unwrap_or_default(),
             ok: false,
             message: msg.into(),
-            goals: Vec::new(),
+            goals: state.as_ref().map(|st| self.session.goals_view(st)).unwrap_or_default(),
             theorem: self.session.current.as_ref().map(|c| c.0.clone()),
+            suggestions: state
+                .as_ref()
+                .and_then(|st| st.focused())
+                .map(|g| suggest_goal(&self.session.elab, g))
+                .unwrap_or_default(),
             sealed: None,
         }
     }
 
     fn ok(&mut self, state: &ProofState, msg: impl Into<String>) -> Response {
+        let suggestions = state.focused().map(|g| suggest_goal(&self.session.elab, g)).unwrap_or_default();
         let id = self.session.snapshot(state);
         Response {
             state_id: id,
@@ -146,6 +161,7 @@ impl Machine {
             message: msg.into(),
             goals: self.session.goals_view(state),
             theorem: self.session.current.as_ref().map(|c| c.0.clone()),
+            suggestions,
             sealed: None,
         }
     }
@@ -167,6 +183,38 @@ impl Machine {
                         message: "goals".into(),
                         goals: self.session.goals_view(&st),
                         theorem: self.session.current.as_ref().map(|c| c.0.clone()),
+                        suggestions: st.focused().map(|g| suggest_goal(&self.session.elab, g)).unwrap_or_default(),
+                        sealed: None,
+                    }
+                }
+                Err(e) => self.err(e),
+            },
+            Command::Restore { state_id } => {
+                if !self.session.states.contains_key(&state_id) {
+                    return self.err(format!("unknown state id '{state_id}'"));
+                }
+                self.session.current_state = Some(state_id.clone());
+                let st = self.session.states[&state_id].clone();
+                Response {
+                    state_id,
+                    ok: true,
+                    message: "restored immutable proof state".into(),
+                    goals: self.session.goals_view(&st),
+                    theorem: self.session.current.as_ref().map(|c| c.0.clone()),
+                    suggestions: st.focused().map(|g| suggest_goal(&self.session.elab, g)).unwrap_or_default(),
+                    sealed: None,
+                }
+            }
+            Command::Suggest => match self.current_state() {
+                Ok(st) => {
+                    let id = self.session.current_state.clone().unwrap_or_default();
+                    Response {
+                        state_id: id,
+                        ok: true,
+                        message: "suggestions".into(),
+                        goals: self.session.goals_view(&st),
+                        theorem: self.session.current.as_ref().map(|c| c.0.clone()),
+                        suggestions: st.focused().map(|g| suggest_goal(&self.session.elab, g)).unwrap_or_default(),
                         sealed: None,
                     }
                 }
@@ -336,7 +384,66 @@ impl Machine {
                 self.session.elab.kernel.add_axiom(name, &lps, ty_e).map_err(|e| e.to_string())?;
                 Ok(())
             }
-            _ => Err("OPEN supports def/axiom declarations before the theorem; use batch compile for inductives".into()),
+            SDecl::Inductive { name, levels, params, ty, ctors } => {
+                self.session.elab.level_scope = levels.clone();
+                let pctx = crate::elaborate_telescope(&mut self.session.elab, params)?;
+                let mut obs = Vec::new();
+                let result_ty = self.session.elab.elaborate(&pctx, ty, &mut obs)?;
+                if !obs.is_empty() {
+                    return Err(format!("inductive '{name}': obligations not allowed in the result type"));
+                }
+                let full_ty = crate::wrap(&pctx, result_ty, true);
+                let num_params: u32 = params.iter().map(|t| t.names.len() as u32).sum();
+                let mut ctor_specs = Vec::new();
+                for ctor in ctors {
+                    let mut cctx = pctx.clone();
+                    for tele in &ctor.binders {
+                        let mut obs2 = Vec::new();
+                        let cty = self.session.elab.elaborate(&cctx, &tele.ty, &mut obs2)?;
+                        if !obs2.is_empty() {
+                            return Err(format!("constructor '{}': obligations not allowed", ctor.name));
+                        }
+                        for n in &tele.names {
+                            let local = self.session.elab.make_local(&cctx, n, cty.clone(), None, false)?;
+                            cctx.push(local);
+                        }
+                    }
+                    let result = match &ctor.result {
+                        Some(r) => {
+                            let mut obs3 = Vec::new();
+                            self.session.elab.elaborate(&cctx, r, &mut obs3)?
+                        }
+                        None => {
+                            let mut app = NExpr::Const(name.clone(), self.session.elab.default_levels(name));
+                            for local in &pctx {
+                                app = NExpr::app(app, NExpr::var(&local.name));
+                            }
+                            app
+                        }
+                    };
+                    let full = crate::wrap(&cctx, result, true);
+                    let cname = if ctor.name.contains('.') {
+                        ctor.name.clone()
+                    } else {
+                        format!("{name}.{}", ctor.name)
+                    };
+                    ctor_specs.push((cname, full));
+                }
+                let spec = rigor_kernel::InductiveSpec {
+                    name: name.clone(),
+                    level_params: levels.clone(),
+                    ty: full_ty,
+                    num_params,
+                    constructors: ctor_specs,
+                };
+                self.session
+                    .elab
+                    .kernel
+                    .add_inductive_block(vec![spec])
+                    .map_err(|e| format!("inductive '{name}': {e}"))?;
+                Ok(())
+            }
+            _ => Err("OPEN supports def/axiom/inductive declarations before the theorem".into()),
         }
     }
 

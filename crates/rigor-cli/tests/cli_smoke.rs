@@ -4,7 +4,8 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
+use std::io::Write as _;
+use std::process::{Command, Stdio};
 
 fn rigor() -> Command {
     Command::new(env!("CARGO_BIN_EXE_rigor"))
@@ -71,4 +72,62 @@ fn build_verify_and_corruption_exit_codes() {
     assert_eq!(out.status.code(), Some(4));
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_compiles_and_verifies_in_one_command() {
+    let dir = workdir("check");
+    let src = dir.join("demo.rigor");
+    fs::write(&src, SRC).unwrap();
+    let out = rigor()
+        .args(["check", src.to_str().unwrap(), "--workers", "2", "--challenge", "main"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "check failed: {}", String::from_utf8_lossy(&out.stdout));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("VERIFIED_MATCHED"), "unexpected receipt: {stdout}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn json_string(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+#[test]
+fn machine_jsonl_opens_suggests_proves_and_seals() {
+    let source = "theorem add_comm2 (given x y : Nat) : x + y = y + x := by\n  trivial\n";
+    let input = format!(
+        "{{\"op\":\"open\",\"source\":{}}}\n{{\"op\":\"suggest\"}}\n{{\"op\":\"apply\",\"tactic\":\"solve poly\"}}\n{{\"op\":\"seal\",\"verify\":true,\"include_bundle\":false}}\n{{\"op\":\"quit\"}}\n",
+        json_string(source)
+    );
+    let mut child = rigor()
+        .arg("machine")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(input.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "machine failed: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 4, "one response per non-quit command: {stdout}");
+    assert!(lines[0].contains("\"ok\":true"), "open response: {}", lines[0]);
+    assert!(lines[0].contains("solve poly"), "open should include ranked suggestions: {}", lines[0]);
+    assert!(lines[2].contains("\"closed\":true"), "apply response: {}", lines[2]);
+    assert!(lines[3].contains("\"verdict\":\"VERIFIED_SELF_STATED\""), "seal response: {}", lines[3]);
+    assert!(lines[3].contains("\"verification_key\""), "seal response: {}", lines[3]);
 }

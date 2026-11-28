@@ -10,6 +10,7 @@ pub mod elab;
 pub mod lexer;
 pub mod parser;
 pub mod protocol;
+pub mod suggest;
 
 pub use ast::*;
 pub use elab::{Elab, ProofState};

@@ -205,6 +205,59 @@ theorem zero_add (given n : Nat) : 0 + n = n := by
 }
 
 #[test]
+fn protocol_suggest_and_restore() {
+    let mut machine = Machine::new();
+    let r = machine.execute(Command::Open {
+        source: r#"
+theorem zero_add (given n : Nat) : 0 + n = n := by
+  trivial
+"#
+        .to_string(),
+    });
+    assert!(r.ok, "open failed: {}", r.message);
+    assert!(r.suggestions.iter().any(|s| s.tactic == "solve poly"), "suggestions: {:?}", r.suggestions);
+    assert!(r.suggestions.iter().any(|s| s.tactic == "induction n"), "suggestions: {:?}", r.suggestions);
+    let initial = r.state_id.clone();
+
+    let r = machine.execute(Command::Apply { tactic: "induction n".into() });
+    assert!(r.ok, "induction failed: {}", r.message);
+    assert!(r.goals.len() > 1);
+
+    let r = machine.execute(Command::Restore { state_id: initial.clone() });
+    assert!(r.ok, "restore failed: {}", r.message);
+    assert_eq!(r.state_id, initial, "restoring an unchanged immutable state reuses its id");
+    assert_eq!(r.goals.len(), 1, "branching work must not leak into the restored state");
+
+    let r = machine.execute(Command::Suggest);
+    assert!(r.ok);
+    assert!(r.suggestions.iter().any(|s| s.tactic == "solve poly"));
+    let r = machine.execute(Command::Apply { tactic: "solve poly".into() });
+    assert!(r.ok, "suggested solve poly failed: {}", r.message);
+    assert!(r.goals.iter().all(|g| g.closed));
+}
+
+#[test]
+fn protocol_open_supports_inductive_prelude() {
+    let mut machine = Machine::new();
+    let r = machine.execute(Command::Open {
+        source: r#"
+inductive Pair2 : Type :=
+  | mk (given a : Nat) (given b : Nat) : Pair2
+
+def getA (given p : Pair2) : Nat := p.a
+
+theorem pair_project : getA (Pair2.mk 3 4) = 3 := by
+  trivial
+"#
+        .to_string(),
+    });
+    assert!(r.ok, "open failed: {}", r.message);
+    let r = machine.execute(Command::Apply { tactic: "trivial".into() });
+    assert!(r.ok, "trivial projection failed: {}", r.message);
+    assert!(r.goals.iter().all(|g| g.closed));
+}
+
+#[test]
 fn sorry_is_rejected() {
     let res = compile(
         r#"

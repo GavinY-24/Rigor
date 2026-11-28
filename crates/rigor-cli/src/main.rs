@@ -5,6 +5,9 @@
 //! 2 = UNSUPPORTED, 3 = UNKNOWN_RESOURCE, 4 = usage/IO error, 5 = other
 //! verdicts / internal errors.
 
+mod json;
+mod machine;
+
 use rigor_bridges::{diff_bundles, explain, export_bundle_exchange, import_exchange, render_diff, ExplainOpts};
 use rigor_codec::{decode_bundle, decode_challenge, encode_bundle, encode_challenge, Challenge};
 use rigor_spec::DecoderLimits;
@@ -150,23 +153,21 @@ fn order_sources(sources: &[(String, String)]) -> Result<String, String> {
     Ok(ordered.join("\n"))
 }
 
+fn compile_inputs(files: &[String], policy_name: &str) -> Result<rigor_front::CompiledModule, String> {
+    let mut sources = Vec::new();
+    for f in files {
+        sources.push((f.clone(), read_text(f)?));
+    }
+    let combined = order_sources(&sources)?;
+    rigor_front::compile_with(&combined, policy_name)
+}
+
 fn cmd_build(args: &Args) -> ExitCode {
     if args.positional.is_empty() {
         return err_exit("usage: rigor build <file.rigor...> [-o out.rigorb] [--challenge NAME] [--policy P]");
     }
-    let mut sources = Vec::new();
-    for f in &args.positional {
-        match read_text(f) {
-            Ok(s) => sources.push((f.clone(), s)),
-            Err(e) => return err_exit(e),
-        }
-    }
-    let combined = match order_sources(&sources) {
-        Ok(c) => c,
-        Err(e) => return err_exit(e),
-    };
     let policy_name = args.flags.get("policy").cloned().unwrap_or_else(|| "constructive".into());
-    match rigor_front::compile_with(&combined, &policy_name) {
+    match compile_inputs(&args.positional, &policy_name) {
         Ok(m) => {
             if let Some(out) = args.flags.get("o") {
                 if let Err(e) = write_out(Some(out), &m.bundle_bytes) {
@@ -199,6 +200,61 @@ fn cmd_build(args: &Args) -> ExitCode {
         }
         Err(e) => err_exit(e),
     }
+}
+
+fn receipt_exit(receipt: &Receipt) -> ExitCode {
+    match receipt.verdict {
+        v if v.is_verified() => ExitCode::SUCCESS,
+        VerifyVerdict::Invalid => ExitCode::from(1),
+        VerifyVerdict::Unsupported => ExitCode::from(2),
+        VerifyVerdict::UnknownResource => ExitCode::from(3),
+        _ => ExitCode::from(5),
+    }
+}
+
+/// Fast agent/development loop: compile sources and verify the resulting
+/// bundle in one command, without requiring callers to manage intermediate
+/// artifact paths. Any authored `challenge` declaration is used; an explicit
+/// `--challenge NAME` instead seals all theorem roots under that name.
+fn cmd_check(args: &Args) -> ExitCode {
+    if args.positional.is_empty() {
+        return err_exit("usage: rigor check <file.rigor...> [--challenge NAME] [--policy P] [--workers N] [--cache DIR] [-o out.rigorb] [--receipt out.rigorr]");
+    }
+    let policy = match policy_of(args) {
+        Ok(p) => p,
+        Err(e) => return err_exit(e),
+    };
+    let policy_name = args.flags.get("policy").cloned().unwrap_or_else(|| "constructive".into());
+    let m = match compile_inputs(&args.positional, &policy_name) {
+        Ok(m) => m,
+        Err(e) => return err_exit(e),
+    };
+    if let Some(out) = args.flags.get("o") {
+        if let Err(e) = write_out(Some(out), &m.bundle_bytes) {
+            return err_exit(e);
+        }
+    }
+    let challenge = match args.flags.get("challenge") {
+        Some(name) => Some(Challenge::from_bundle(name, &m.bundle, &m.roots, &policy_name)),
+        None => m.challenges.first().cloned(),
+    };
+    let mut opts = VerifyOptions::default();
+    if let Some(w) = args.flags.get("workers") {
+        opts.workers = w.parse().unwrap_or(1).max(1);
+    }
+    opts.independent = args.switches.contains("independent");
+    let mut cache = match args.flags.get("cache") {
+        Some(dir) => VerifyCache::with_disk(PathBuf::from(dir)),
+        None => VerifyCache::new(),
+    };
+    let receipt = verify_bundle(&m.bundle_bytes, challenge.as_ref(), &policy, &opts, Some(&mut cache));
+    println!("{}", receipt.to_json());
+    if let Some(out) = args.flags.get("receipt") {
+        if let Err(e) = write_out(Some(out), receipt.to_json().as_bytes()) {
+            return err_exit(e);
+        }
+    }
+    receipt_exit(&receipt)
 }
 
 fn cmd_seal(args: &Args) -> ExitCode {
@@ -270,13 +326,7 @@ fn cmd_verify(args: &Args) -> ExitCode {
             return err_exit(e);
         }
     }
-    match receipt.verdict {
-        v if v.is_verified() => ExitCode::SUCCESS,
-        VerifyVerdict::Invalid => ExitCode::from(1),
-        VerifyVerdict::Unsupported => ExitCode::from(2),
-        VerifyVerdict::UnknownResource => ExitCode::from(3),
-        _ => ExitCode::from(5),
-    }
+    receipt_exit(&receipt)
 }
 
 fn cmd_explain(args: &Args) -> ExitCode {
@@ -403,7 +453,7 @@ fn cmd_bench(args: &Args) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-const USAGE: &str = "rigor — the Rigor proof language (L36 profile)\n\nusage:\n  rigor build <file.rigor...> [-o out.rigorb] [--challenge NAME] [--policy P]\n  rigor seal <in.rigorb> [--name NAME] [--policy P] [-o out.rigorc]\n  rigor verify <bundle.rigorb> [--challenge c.rigorc] [--policy P] [--workers N] [--independent] [--cache DIR] [--receipt out.rigorr]\n  rigor explain <bundle.rigorb> [--receipt r.rigorr] [--assumptions] [--coercions]\n  rigor import <file.rigx> [-o out.rigorb] [--pin-override]\n  rigor export <bundle.rigorb> [-o out.rigx]\n  rigor diff <old.rigorb> <new.rigorb>\n  rigor bench [--json]\n";
+const USAGE: &str = "rigor — the Rigor proof language (L36 profile)\n\nusage:\n  rigor check <file.rigor...> [--challenge NAME] [--policy P] [--workers N] [--cache DIR] [-o out.rigorb]\n  rigor machine            # agent-native JSONL proof session (alias: rigor ai)\n  rigor build <file.rigor...> [-o out.rigorb] [--challenge NAME] [--policy P]\n  rigor seal <in.rigorb> [--name NAME] [--policy P] [-o out.rigorc]\n  rigor verify <bundle.rigorb> [--challenge c.rigorc] [--policy P] [--workers N] [--independent] [--cache DIR] [--receipt out.rigorr]\n  rigor explain <bundle.rigorb> [--receipt r.rigorr] [--assumptions] [--coercions]\n  rigor import <file.rigx> [-o out.rigorb] [--pin-override]\n  rigor export <bundle.rigorb> [-o out.rigx]\n  rigor diff <old.rigorb> <new.rigorb>\n  rigor bench [--json]\n";
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().collect();
@@ -414,6 +464,7 @@ fn main() -> ExitCode {
     let args = parse_args(&argv[2..]);
     match argv[1].as_str() {
         "build" => cmd_build(&args),
+        "check" => cmd_check(&args),
         "seal" => cmd_seal(&args),
         "verify" => cmd_verify(&args),
         "explain" => cmd_explain(&args),
@@ -421,6 +472,7 @@ fn main() -> ExitCode {
         "export" => cmd_export(&args),
         "diff" => cmd_diff(&args),
         "bench" => cmd_bench(&args),
+        "machine" | "ai" => machine::run(),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             ExitCode::SUCCESS
