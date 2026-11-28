@@ -148,22 +148,36 @@ fn order_sources(sources: &[(String, String)]) -> Result<String, String> {
         out
     }
     fn module_of(src: &str) -> String {
-        uncommented(src)
-            .lines()
-            .map(|l| l.trim())
-            .find_map(|l| l.strip_prefix("module "))
-            .map(|m| m.trim().to_string())
-            .unwrap_or_default()
+        for line in uncommented(src).lines() {
+            let mut tokens = line.split_whitespace();
+            if tokens.next() == Some("module") {
+                return tokens.next().unwrap_or_default().to_string();
+            }
+        }
+        String::new()
     }
     fn imports_of(src: &str) -> Vec<String> {
         let mut out = Vec::new();
         for line in uncommented(src).lines() {
-            if let Some(rest) = line.trim().strip_prefix("import ") {
-                for dep in rest.split(',') {
-                    let dep = dep.trim();
-                    if !dep.is_empty() {
-                        out.push(dep.to_string());
-                    }
+            let spaced = line.replace(',', " , ");
+            let tokens: Vec<&str> = spaced.split_whitespace().collect();
+            if tokens.first() != Some(&"import") {
+                continue;
+            }
+            let mut i = 1usize;
+            if let Some(first) = tokens.get(i) {
+                out.push((*first).to_string());
+                i += 1;
+            } else {
+                continue;
+            }
+            while tokens.get(i) == Some(&",") {
+                i += 1;
+                if let Some(dep) = tokens.get(i) {
+                    out.push((*dep).to_string());
+                    i += 1;
+                } else {
+                    break;
                 }
             }
         }
