@@ -63,12 +63,15 @@ pub struct SealedBundle {
     pub statement_id: Option<String>,
 }
 
+type TheoremBinding = (String, Vec<crate::elab::CtxLocal>, NExpr, Vec<String>);
+
 struct Session {
     elab: Elab,
     /// The theorem currently being proved interactively (name, telescope
     /// context, target), if any.
-    current: Option<(String, Vec<crate::elab::CtxLocal>, NExpr, Vec<String>)>,
+    current: Option<TheoremBinding>,
     states: HashMap<String, ProofState>,
+    state_theorems: HashMap<String, TheoremBinding>,
     current_state: Option<String>,
     nonce: u64,
     sealed: Vec<(String, SealedBundle)>,
@@ -90,6 +93,9 @@ impl Session {
         }
         let id = rigor_spec::sha256::to_hex(&domain_hash("RIGOR_PROTO_STATE_V1\0".as_bytes(), &[data.as_bytes()]));
         self.states.insert(id.clone(), state.clone());
+        if let Some(current) = &self.current {
+            self.state_theorems.insert(id.clone(), current.clone());
+        }
         self.current_state = Some(id.clone());
         id
     }
@@ -127,6 +133,7 @@ impl Machine {
                 elab: Elab::new(kernel),
                 current: None,
                 states: HashMap::new(),
+                state_theorems: HashMap::new(),
                 current_state: None,
                 nonce: 0,
                 sealed: Vec::new(),
@@ -193,6 +200,11 @@ impl Machine {
                 if !self.session.states.contains_key(&state_id) {
                     return self.err(format!("unknown state id '{state_id}'"));
                 }
+                let owner = match self.session.state_theorems.get(&state_id).cloned() {
+                    Some(owner) => owner,
+                    None => return self.err("state has no owning theorem"),
+                };
+                self.session.current = Some(owner);
                 self.session.current_state = Some(state_id.clone());
                 let st = self.session.states[&state_id].clone();
                 Response {

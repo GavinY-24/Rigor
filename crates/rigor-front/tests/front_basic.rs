@@ -237,6 +237,30 @@ theorem zero_add (given n : Nat) : 0 + n = n := by
 }
 
 #[test]
+fn protocol_restore_reselects_owning_theorem() {
+    let mut machine = Machine::new();
+    let r = machine.execute(Command::Open {
+        source: "theorem first_goal : 1 = 1 := by\n  trivial\n".to_string(),
+    });
+    assert!(r.ok, "open first failed: {}", r.message);
+    let first_state = r.state_id.clone();
+
+    let r = machine.execute(Command::Open {
+        source: "theorem second_goal : 2 = 2 := by\n  trivial\n".to_string(),
+    });
+    assert!(r.ok, "open second failed: {}", r.message);
+    assert_eq!(r.theorem.as_deref(), Some("second_goal"));
+
+    let r = machine.execute(Command::Restore { state_id: first_state });
+    assert!(r.ok, "restore failed: {}", r.message);
+    assert_eq!(r.theorem.as_deref(), Some("first_goal"));
+    let r = machine.execute(Command::Apply { tactic: "trivial".into() });
+    assert!(r.ok, "trivial failed: {}", r.message);
+    let r = machine.execute(Command::Seal);
+    assert!(r.ok, "restored theorem must seal against its own statement: {}", r.message);
+}
+
+#[test]
 fn protocol_open_supports_inductive_prelude() {
     let mut machine = Machine::new();
     let r = machine.execute(Command::Open {
