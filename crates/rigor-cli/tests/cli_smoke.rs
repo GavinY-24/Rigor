@@ -166,7 +166,7 @@ fn check_reads_headers_split_by_multiline_comments() {
     let b = dir.join("b.rigor");
     fs::write(
         &a,
-        "module /* multi\nline */ A\nimport /* multi\nline */ B\ntheorem alpha_root : beta_val = 1 := by\n  trivial\n",
+        "module/* multi\nline */A\nimport/* multi\nline */B\ntheorem alpha_root : beta_val = 1 := by\n  trivial\n",
     )
     .unwrap();
     fs::write(&b, "module B\ndef beta_val : Nat := 1\n").unwrap();

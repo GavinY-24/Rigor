@@ -123,6 +123,8 @@ fn order_sources(sources: &[(String, String)]) -> Result<String, String> {
                 continue;
             }
             if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                // A comment is a token boundary even though it produces no token.
+                out.push(' ');
                 let mut depth = 1usize;
                 i += 2;
                 while i < chars.len() && depth > 0 {
