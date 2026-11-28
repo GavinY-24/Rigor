@@ -1,0 +1,8 @@
+[package]
+name = "rigor-spec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rigor L36-1.0 ABI specification, hashes, arbitrary-precision arithmetic, policies, and pure reference judgments"
+
+[dependencies]

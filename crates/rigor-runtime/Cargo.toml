@@ -1,0 +1,11 @@
+[package]
+name = "rigor-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Parallel DAG verification scheduler, atomic commit, policy checker, and VerificationKey incremental cache"
+
+[dependencies]
+rigor-spec = { path = "../rigor-spec" }
+rigor-kernel = { path = "../rigor-kernel" }
+rigor-codec = { path = "../rigor-codec" }

@@ -1,0 +1,11 @@
+[package]
+name = "rigor-certificates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rigor standard mathematical library and proved computational certificate plugins"
+
+[dependencies]
+rigor-spec = { path = "../rigor-spec" }
+rigor-kernel = { path = "../rigor-kernel" }
+rigor-codec = { path = "../rigor-codec" }
